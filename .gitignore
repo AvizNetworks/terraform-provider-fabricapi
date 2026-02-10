@@ -1,0 +1,19 @@
+# Go
+bin/
+*.exe
+*.test
+*.out
+vendor/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+
+# Docker
+*.tar
+
+# OS
+.DS_Store
+Thumbs.db
