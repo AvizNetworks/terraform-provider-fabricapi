@@ -40,7 +40,7 @@ func (r *TenantServersResource) Schema(ctx context.Context, req resource.SchemaR
 				Required:            true,
 			},
 			"operation": schema.StringAttribute{
-				MarkdownDescription: "Operation to perform: ADD or REMOVE",
+				MarkdownDescription: "Operation to perform: ADD, DELETE, or REMOVE (REMOVE is alias for DELETE)",
 				Required:            true,
 			},
 			"servers": schema.ListAttribute{
@@ -91,15 +91,33 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 	}
 
 	operation := data.Operation.ValueString()
-	if operation != "ADD" && operation != "REMOVE" {
+	if operation != "ADD" && operation != "DELETE" && operation != "REMOVE" {
 		resp.Diagnostics.AddError(
 			"Invalid Operation",
-			fmt.Sprintf("Operation must be 'ADD' or 'REMOVE', got: %s", operation),
+			fmt.Sprintf("Operation must be 'ADD', 'DELETE', or 'REMOVE', got: %s", operation),
 		)
 		return
 	}
 
 	tenantName := data.TenantName.ValueString()
+	// --- PRE-ALLOCATION CONFLICT CHECK ---
+	if operation == "ADD" {
+		allocated, err := r.client.GetAllocatedServers(ctx, r.client.Fabric)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", err.Error())
+			return
+		}
+
+		for _, s := range servers {
+			if owner, exists := allocated[s]; exists && owner != tenantName {
+				resp.Diagnostics.AddError(
+					"Server already allocated",
+					fmt.Sprintf("Server %s is already allocated to tenant %s", s, owner),
+				)
+				return
+			}
+		}
+	}
 	err := r.client.UpdateTenantServers(tenantName, operation, servers)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update tenant servers: %s", err))
@@ -140,6 +158,27 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 	}
 
 	operation := data.Operation.ValueString()
+	
+	// --- PRE-ALLOCATION CONFLICT CHECK ---
+	if operation == "ADD" {
+		allocated, err := r.client.GetAllocatedServers(ctx, r.client.Fabric)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", err.Error())
+			return
+		}
+
+		tenantName := data.TenantName.ValueString()
+		for _, s := range servers {
+			if owner, exists := allocated[s]; exists && owner != tenantName {
+				resp.Diagnostics.AddError(
+					"Server already allocated",
+					fmt.Sprintf("Server %s is already allocated to tenant %s", s, owner),
+				)
+				return
+			}
+		}
+	}
+	
 	err := r.client.UpdateTenantServers(data.TenantName.ValueString(), operation, servers)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update tenant servers: %s", err))
@@ -167,9 +206,9 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		return
 	}
 
-	err := r.client.UpdateTenantServers(data.TenantName.ValueString(), "REMOVE", servers)
+	err := r.client.UpdateTenantServers(data.TenantName.ValueString(), "DELETE", servers)
 	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to remove tenant servers: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete tenant servers: %s", err))
 		return
 	}
 }
