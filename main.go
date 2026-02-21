@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
-	"terraform-provider-fabricapi/internal/provider"
+	"github.com/AvizNetworks/terraform-provider-fabricapi/internal/provider"
 )
+
 
 var version string = "1.0.0"
 

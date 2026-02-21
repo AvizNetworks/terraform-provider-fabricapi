@@ -3,15 +3,25 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 )
 
+
+
+
 var _ resource.Resource = &TenantResource{}
+var _ resource.ResourceWithImportState = &TenantResource{}
 
 func NewTenantResource() resource.Resource {
 	return &TenantResource{}
@@ -25,6 +35,7 @@ type TenantResourceModel struct {
 	TenantName     types.String `tfsdk:"tenant_name"`
 	Description    types.String `tfsdk:"description"`
 	MaxGpusAllowed types.Int64  `tfsdk:"max_gpus_allowed"`
+	FabricName     types.String `tfsdk:"fabric_name"`
 	ID             types.String `tfsdk:"id"`
 }
 
@@ -38,19 +49,37 @@ func (r *TenantResource) Schema(ctx context.Context, req resource.SchemaRequest,
 
 		Attributes: map[string]schema.Attribute{
 			"tenant_name": schema.StringAttribute{
-				MarkdownDescription: "Name of the tenant",
-				Required:            true,
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^[a-zA-Z0-9-_]{3,32}$`),
+						"Tenant name must be 3–32 chars: letters, numbers, - or _",
+					),
+				},
+			},
+
+
+			"description": schema.StringAttribute{
+				Required: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
-			"description": schema.StringAttribute{
-				MarkdownDescription: "Description of the tenant",
-				Required:            true,
-			},
+
 			"max_gpus_allowed": schema.Int64Attribute{
-				MarkdownDescription: "Maximum number of GPUs allowed",
-				Required:            true,
+				Required: true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
+			},
+
+
+			"fabric_name": schema.StringAttribute{
+				MarkdownDescription: "Fabric name (overrides provider-level fabric if specified)",
+				Optional:            true,
 			},
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -90,15 +119,32 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Get fabric name - use resource override if provided, otherwise use client default
+	fabricName := r.client.Fabric
+	if !data.FabricName.IsNull() && data.FabricName.ValueString() != "" {
+		fabricName = data.FabricName.ValueString()
+	}
+
 	tenantReq := TenantRequest{
 		TenantName:     data.TenantName.ValueString(),
 		Description:    data.Description.ValueString(),
 		MaxGpusAllowed: int(data.MaxGpusAllowed.ValueInt64()),
 	}
 
-	result, err := r.client.CreateTenant(tenantReq)
+	result, err := r.client.CreateTenantWithFabric(fabricName, tenantReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create tenant: %s", err))
+		return
+	}
+
+	// --- WAIT FOR TENANT READINESS (prevents backend NullPointerException) ---
+	err = r.client.WaitForTenantReady(ctx, fabricName, data.TenantName.ValueString(), 60*time.Second)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Tenant provisioning not completed",
+			fmt.Sprintf("Tenant %s was created but controller did not finish provisioning: %s",
+				data.TenantName.ValueString(), err),
+		)
 		return
 	}
 
@@ -119,6 +165,10 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.TenantName = types.StringValue(result.TenantName)
 	data.Description = types.StringValue(result.Description)
 	data.MaxGpusAllowed = types.Int64Value(int64(result.MaxGpusAllowed))
+	
+	if data.FabricName.IsNull() {
+		data.FabricName = types.StringNull()
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -132,7 +182,13 @@ func (r *TenantResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	result, err := r.client.GetTenant(data.TenantName.ValueString())
+	// Get fabric name - use resource override if provided, otherwise use client default
+	fabricName := r.client.Fabric
+	if !data.FabricName.IsNull() && data.FabricName.ValueString() != "" {
+		fabricName = data.FabricName.ValueString()
+	}
+
+	result, err := r.client.GetTenantWithFabric(fabricName, data.TenantName.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
 		return
@@ -162,21 +218,13 @@ func (r *TenantResource) Read(ctx context.Context, req resource.ReadRequest, res
 }
 
 func (r *TenantResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data TenantResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	resp.Diagnostics.AddWarning(
-		"Update Not Fully Supported",
-		"The API does not support updating tenant properties. Terraform will track the new values but the API may not reflect them.",
+	resp.Diagnostics.AddError(
+		"Tenant update not supported",
+		"The Fabric API does not support updating tenant properties. "+
+			"Changing description or max_gpus_allowed requires recreating the tenant.",
 	)
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
+
 
 func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data TenantResourceModel
@@ -187,9 +235,103 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	err := r.client.DeleteTenant(data.TenantName.ValueString())
+	tenantName := data.TenantName.ValueString()
+
+	// Get fabric name - use resource override if provided, otherwise use client default
+	fabricName := r.client.Fabric
+	if !data.FabricName.IsNull() && data.FabricName.ValueString() != "" {
+		fabricName = data.FabricName.ValueString()
+	}
+
+	// Cascading delete: Deallocate servers before deleting tenant
+	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+	if err != nil {
+		// If we can't get tenant info, log warning but proceed with deletion
+		resp.Diagnostics.AddWarning(
+			"Unable to verify GPU allocation status",
+			fmt.Sprintf("Could not check if GPUs are allocated: %s. Proceeding with deletion.", err),
+		)
+	} else if tenantInfo != nil && tenantInfo.GpusAllocated > 0 && len(tenantInfo.Servers) > 0 {
+		// Deallocate all servers first
+		resp.Diagnostics.AddWarning(
+			"Deallocating servers",
+			fmt.Sprintf("Tenant %s has %d GPUs allocated across %d servers. Deallocating servers before deletion: %v", 
+				tenantName, tenantInfo.GpusAllocated, len(tenantInfo.Servers), tenantInfo.Servers),
+		)
+		
+		err = r.client.UpdateTenantServers(tenantName, "DELETE", tenantInfo.Servers)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Failed to deallocate servers",
+				fmt.Sprintf("Unable to deallocate servers before tenant deletion: %s", err),
+			)
+			return
+		}
+	}
+
+	err = r.client.DeleteTenantWithFabric(fabricName, tenantName)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete tenant: %s", err))
 		return
 	}
+}
+
+func (r *TenantResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	// The import ID is the tenant name, optionally with fabric: "fabric_name:tenant_name" or just "tenant_name"
+	importID := req.ID
+	var tenantName, fabricName string
+
+	// Check if import ID contains fabric override
+	if len(importID) > 0 && importID[0] != ':' {
+		// Format: "fabric_name:tenant_name" or just "tenant_name"
+		parts := splitImportID(importID)
+		if len(parts) == 2 {
+			fabricName = parts[0]
+			tenantName = parts[1]
+		} else {
+			fabricName = r.client.Fabric
+			tenantName = importID
+		}
+	} else {
+		fabricName = r.client.Fabric
+		tenantName = importID
+	}
+
+	// Fetch tenant data from API
+	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant during import: %s", err))
+		return
+	}
+
+	if tenantInfo == nil {
+		resp.Diagnostics.AddError("Tenant Not Found", fmt.Sprintf("Tenant '%s' does not exist", tenantName))
+		return
+	}
+
+	// Set state with imported data
+	state := TenantResourceModel{
+		TenantName:     types.StringValue(tenantInfo.TenantName),
+		Description:    types.StringValue(tenantInfo.Description),
+		MaxGpusAllowed: types.Int64Value(int64(tenantInfo.MaxGpusAllowed)),
+		ID:             types.StringValue(tenantInfo.TenantName),
+	}
+
+	if fabricName != r.client.Fabric {
+		state.FabricName = types.StringValue(fabricName)
+	} else {
+		state.FabricName = types.StringNull()
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+// splitImportID splits an import ID in the format "fabric_name:tenant_name"
+func splitImportID(id string) []string {
+	for i, c := range id {
+		if c == ':' {
+			return []string{id[:i], id[i+1:]}
+		}
+	}
+	return []string{id}
 }

@@ -1,4 +1,5 @@
-FROM golang:1.21-alpine AS builder
+FROM golang:1.25-alpine AS builder
+
 
 WORKDIR /build
 
@@ -30,9 +31,10 @@ COPY --from=builder /build/terraform-provider-fabricapi \
 # Set working directory
 WORKDIR /workspace
 
-# Copy example terraform files
-COPY examples/*.tf /workspace/
-#COPY examples/*.tfvars /workspace/
+# Copy main terraform files (excluding .example files to avoid duplicates)
+COPY examples/ /workspace/
+
+
 
 # Override entrypoint and default to shell
 ENTRYPOINT ["/bin/sh"]

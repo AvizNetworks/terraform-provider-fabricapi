@@ -2,11 +2,15 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
+	"time"
 )
+
 
 type APIClient struct {
 	Endpoint string
@@ -31,24 +35,28 @@ type TenantAPIResponse struct {
 
 type TenantData struct {
 	ID             int      `json:"id"`
-	Name           string   `json:"name"`           // API uses "name" not "tenantName"
+	Name           string   `json:"name"`
 	Description    string   `json:"description"`
 	MaxGpusAllowed int      `json:"maxGpusAllowed"`
 	GpusAllocated  int      `json:"gpusAllocated"`
+	AllotedGpus    string   `json:"allotedGpus"`   // Comma-separated server names
 	FabricName     string   `json:"fabricName"`
-	Networks       []string `json:"networks"`
 }
 
-// Our response structure for Terraform
+
 type TenantResponse struct {
 	TenantName     string   `json:"tenantName"`
 	Description    string   `json:"description"`
 	MaxGpusAllowed int      `json:"maxGpusAllowed"`
+	GpusAllocated  int      `json:"gpusAllocated,omitempty"`
 	Servers        []string `json:"servers,omitempty"`
+	AllotedGpus    string   `json:"allotedGpus"` 
 }
 
-func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) {
-	url := fmt.Sprintf("%s/fabrics/%s/tenants", c.Endpoint, c.Fabric)
+
+// CreateTenantWithFabric creates a tenant in the specified fabric
+func (c *APIClient) CreateTenantWithFabric(fabricName string, tenant TenantRequest) (*TenantResponse, error) {
+	url := fmt.Sprintf("%s/fabrics/%s/tenants", c.Endpoint, fabricName)
 	
 	jsonData, err := json.Marshal(tenant)
 	if err != nil {
@@ -62,7 +70,9 @@ func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) 
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 6 * time.Minute,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -75,15 +85,8 @@ func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) 
 		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
-	// Debug: Log what API returned
-	fmt.Printf("[DEBUG] API Response Status: %d\n", resp.StatusCode)
-	fmt.Printf("[DEBUG] API Response Body: %s\n", string(body))
-
-	// Parse the nested API response
 	var apiResponse TenantAPIResponse
 	if err := json.Unmarshal(body, &apiResponse); err != nil {
-		// If parsing fails, return request data as fallback
-		fmt.Printf("[DEBUG] Failed to parse API response: %v\n", err)
 		return &TenantResponse{
 			TenantName:     tenant.TenantName,
 			Description:    tenant.Description,
@@ -91,14 +94,12 @@ func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) 
 		}, nil
 	}
 
-	// Map API response to our response structure
 	result := &TenantResponse{
-		TenantName:     apiResponse.Tenant.Name, // Map "name" to "tenantName"
+		TenantName:     apiResponse.Tenant.Name,
 		Description:    apiResponse.Tenant.Description,
 		MaxGpusAllowed: apiResponse.Tenant.MaxGpusAllowed,
 	}
 
-	// Fallback to request values if API didn't return them
 	if result.TenantName == "" {
 		result.TenantName = tenant.TenantName
 	}
@@ -109,17 +110,22 @@ func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) 
 		result.MaxGpusAllowed = tenant.MaxGpusAllowed
 	}
 
-	fmt.Printf("[DEBUG] Mapped TenantName: %s (from API field 'name')\n", result.TenantName)
-	fmt.Printf("[DEBUG] Mapped Description: %s\n", result.Description)
-	fmt.Printf("[DEBUG] Mapped MaxGpusAllowed: %d\n", result.MaxGpusAllowed)
-
 	return result, nil
 }
 
-func (c *APIClient) GetTenant(tenantName string) (*TenantResponse, error) {
-	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, c.Fabric, tenantName)
+// CreateTenant uses the default fabric from the client
+func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) {
+	return c.CreateTenantWithFabric(c.Fabric, tenant)
+}
+
+// GetTenantWithFabric retrieves tenant information from the specified fabric
+func (c *APIClient) GetTenantWithFabric(fabricName string, tenantName string) (*TenantResponse, error) {
+	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
 	
-	resp, err := http.Get(url)
+	client := &http.Client{
+		Timeout: 6 * time.Minute,
+	}
+	resp, err := client.Get(url)
 	if err != nil {
 		return nil, err
 	}
@@ -146,20 +152,125 @@ func (c *APIClient) GetTenant(tenantName string) (*TenantResponse, error) {
 		TenantName:     apiResponse.Tenant.Name, // Map "name" to "tenantName"
 		Description:    apiResponse.Tenant.Description,
 		MaxGpusAllowed: apiResponse.Tenant.MaxGpusAllowed,
+		GpusAllocated:  apiResponse.Tenant.GpusAllocated,
+	}
+
+	// Parse comma-separated server names from allotedGpus
+	if apiResponse.Tenant.AllotedGpus != "" {
+		servers := []string{}
+		for _, server := range bytes.Split([]byte(apiResponse.Tenant.AllotedGpus), []byte(",")) {
+			serverName := string(bytes.TrimSpace(server))
+			if serverName != "" {
+				servers = append(servers, serverName)
+			}
+		}
+		result.Servers = servers
 	}
 
 	return result, nil
 }
 
-func (c *APIClient) DeleteTenant(tenantName string) error {
-	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, c.Fabric, tenantName)
+// GetTenant uses the default fabric from the client
+func (c *APIClient) GetTenant(tenantName string) (*TenantResponse, error) {
+	return c.GetTenantWithFabric(c.Fabric, tenantName)
+}
+
+// ListTenants returns all tenants in a fabric
+func (c *APIClient) ListTenants(
+	ctx context.Context,
+	fabricName string,
+) ([]TenantResponse, error) {
+
+	url := fmt.Sprintf("%s/fabrics/%s/tenants", c.Endpoint, fabricName)
+
+	var raw struct {
+		Tenants []TenantData `json:"tenants"`
+	}
+
+	if err := c.doRequest(ctx, http.MethodGet, url, nil, &raw); err != nil {
+		return nil, err
+	}
+
+	result := make([]TenantResponse, 0, len(raw.Tenants))
+
+	for _, t := range raw.Tenants {
+		result = append(result, TenantResponse{
+			TenantName:     t.Name,
+			Description:    t.Description,
+			MaxGpusAllowed: t.MaxGpusAllowed,
+			GpusAllocated:  t.GpusAllocated,
+			AllotedGpus:    t.AllotedGpus,
+		})
+	}
+
+	return result, nil
+}
+
+
+
+
+
+func (c *APIClient) doRequest(
+	ctx context.Context,
+	method, url string,
+	body any,
+	out any,
+) error {
+
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewBuffer(data)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	if err != nil {
+		return err
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 6 * time.Minute}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	if out != nil {
+		if len(respBody) == 0 {
+			return nil
+		}
+		if err := json.Unmarshal(respBody, out); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// DeleteTenantWithFabric deletes a tenant from the specified fabric
+func (c *APIClient) DeleteTenantWithFabric(fabricName string, tenantName string) error {
+	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
 	
 	req, err := http.NewRequest("DELETE", url, nil)
 	if err != nil {
 		return err
 	}
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 5 * time.Minute,
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -174,7 +285,17 @@ func (c *APIClient) DeleteTenant(tenantName string) error {
 	return nil
 }
 
+// DeleteTenant uses the default fabric from the client
+func (c *APIClient) DeleteTenant(tenantName string) error {
+	return c.DeleteTenantWithFabric(c.Fabric, tenantName)
+}
+
 func (c *APIClient) UpdateTenantServers(tenantName string, operation string, servers []string) error {
+	// Normalize operation: support both DELETE and REMOVE
+	if operation == "REMOVE" {
+		operation = "DELETE"
+	}
+
 	// Tenant name goes in the URL path, not the body
 	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, c.Fabric, tenantName)
 	
@@ -187,7 +308,6 @@ func (c *APIClient) UpdateTenantServers(tenantName string, operation string, ser
 	if err != nil {
 		return err
 	}
-
 	fmt.Printf("[DEBUG] PATCH Request URL: %s\n", url)
 	fmt.Printf("[DEBUG] PATCH Request Body: %s\n", string(jsonData))
 
@@ -198,7 +318,9 @@ func (c *APIClient) UpdateTenantServers(tenantName string, operation string, ser
 
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{}
+	client := &http.Client{
+		Timeout: 10 * time.Minute, // Long timeout for GPU allocation/deallocation operations
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -206,13 +328,60 @@ func (c *APIClient) UpdateTenantServers(tenantName string, operation string, ser
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	
-	fmt.Printf("[DEBUG] PATCH Response Status: %d\n", resp.StatusCode)
-	fmt.Printf("[DEBUG] PATCH Response Body: %s\n", string(body))
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusCreated {
 		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
 	return nil
+}
+
+func (c *APIClient) GetAllocatedServers(ctx context.Context, fabric string) (map[string]string, error) {
+	tenants, err := c.ListTenants(ctx, fabric)
+	if err != nil {
+		return nil, err
+	}
+
+	allocated := make(map[string]string)
+
+	for _, t := range tenants {
+		if t.AllotedGpus == "" {
+			continue
+		}
+
+		servers := strings.Split(t.AllotedGpus, ",")
+		for _, s := range servers {
+			allocated[strings.TrimSpace(s)] = t.TenantName
+		}
+	}
+
+	return allocated, nil
+}
+
+func (c *APIClient) WaitForTenantReady(
+	ctx context.Context,
+	fabric string,
+	tenantName string,
+	timeout time.Duration,
+) error {
+
+	start := time.Now()
+
+	for {
+		if time.Since(start) > timeout {
+			return fmt.Errorf("timeout waiting for tenant %s to become ready", tenantName)
+		}
+
+		tenant, err := c.GetTenantWithFabric(fabric, tenantName)
+		if err != nil {
+			return err
+		}
+
+		// READY when config exists OR tenant readable
+		if tenant != nil {
+			return nil
+		}
+
+		time.Sleep(2 * time.Second)
+	}
 }

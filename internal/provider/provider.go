@@ -71,11 +71,11 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 	}
 
 	if endpoint == "" {
-		endpoint = "http://worker07.air.nvidia.com:29123"
+		endpoint = "http://worker07.air.nvidia.com:22886"
 	}
 
 	if fabric == "" {
-		fabric = "fab"
+		fabric = "fabi"
 	}
 
 	client := &APIClient{
@@ -95,5 +95,9 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 }
 
 func (p *FabricAPIProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
+	return []func() datasource.DataSource{
+		NewTenantsDataSource,
+	}
 }
+
+
