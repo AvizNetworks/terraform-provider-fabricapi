@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -70,12 +71,23 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 		fabric = data.Fabric.ValueString()
 	}
 
-	if endpoint == "" {
-		endpoint = "http://worker07.air.nvidia.com:22886"
-	}
+	endpoint = strings.TrimSpace(endpoint)
+	fabric = strings.TrimSpace(fabric)
 
 	if fabric == "" {
-		fabric = "fabi"
+		resp.Diagnostics.AddError(
+			"Missing Fabric API fabric name",
+			"Configure the provider with `fabric`, or set environment variable `FABRIC_NAME`.",
+		)
+		return
+	}
+
+	if endpoint == "" {
+		resp.Diagnostics.AddError(
+			"Missing Fabric API endpoint",
+			"Configure the provider with `endpoint`, or set environment variable `FABRIC_API_ENDPOINT`.",
+		)
+		return
 	}
 
 	client := &APIClient{
@@ -91,6 +103,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewTenantResource,
 		NewTenantServersResource,
+		NewVpcPeeringResource,
 	}
 }
 
@@ -99,5 +112,3 @@ func (p *FabricAPIProvider) DataSources(ctx context.Context) []func() datasource
 		NewTenantsDataSource,
 	}
 }
-
-

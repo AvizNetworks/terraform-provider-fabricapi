@@ -1,6 +1,6 @@
 module github.com/AvizNetworks/terraform-provider-fabricapi
 
-go 1.22.0
+go 1.22
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.12.0

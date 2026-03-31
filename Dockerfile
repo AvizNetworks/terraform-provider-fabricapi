@@ -15,6 +15,9 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Align go.mod / go.sum with the toolchain (avoids: "updates to go.mod needed; run go mod tidy")
+RUN go mod tidy
+
 # Build the provider
 RUN CGO_ENABLED=0 GOOS=linux go build -o terraform-provider-fabricapi
 

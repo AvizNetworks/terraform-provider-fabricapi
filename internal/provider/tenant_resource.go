@@ -8,17 +8,14 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
-	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 )
-
-
-
 
 var _ resource.Resource = &TenantResource{}
 var _ resource.ResourceWithImportState = &TenantResource{}
@@ -61,7 +58,6 @@ func (r *TenantResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				},
 			},
 
-
 			"description": schema.StringAttribute{
 				Required: true,
 				PlanModifiers: []planmodifier.String{
@@ -75,7 +71,6 @@ func (r *TenantResource) Schema(ctx context.Context, req resource.SchemaRequest,
 					int64planmodifier.RequiresReplace(),
 				},
 			},
-
 
 			"fabric_name": schema.StringAttribute{
 				MarkdownDescription: "Fabric name (overrides provider-level fabric if specified)",
@@ -131,7 +126,7 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 		MaxGpusAllowed: int(data.MaxGpusAllowed.ValueInt64()),
 	}
 
-	result, err := r.client.CreateTenantWithFabric(fabricName, tenantReq)
+	_, err := r.client.CreateTenantWithFabric(fabricName, tenantReq)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create tenant: %s", err))
 		return
@@ -148,25 +143,13 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	// IMPORTANT: Always use the planned values if API returns empty
-	// This prevents the "inconsistent result" error
-	if result.TenantName == "" {
-		result.TenantName = data.TenantName.ValueString()
-	}
-	if result.Description == "" {
-		result.Description = data.Description.ValueString()
-	}
-	if result.MaxGpusAllowed == 0 {
-		result.MaxGpusAllowed = int(data.MaxGpusAllowed.ValueInt64())
-	}
-
-	// Set all fields from the result
-	data.ID = types.StringValue(result.TenantName)
-	data.TenantName = types.StringValue(result.TenantName)
-	data.Description = types.StringValue(result.Description)
-	data.MaxGpusAllowed = types.Int64Value(int64(result.MaxGpusAllowed))
-	
-	if data.FabricName.IsNull() {
+	// State must match the plan exactly (avoids "inconsistent result" / phantom attributes).
+	plannedName := data.TenantName.ValueString()
+	data.ID = types.StringValue(plannedName)
+	data.TenantName = types.StringValue(plannedName)
+	data.Description = types.StringValue(data.Description.ValueString())
+	data.MaxGpusAllowed = types.Int64Value(data.MaxGpusAllowed.ValueInt64())
+	if data.FabricName.IsNull() || data.FabricName.ValueString() == "" {
 		data.FabricName = types.StringNull()
 	}
 
@@ -225,7 +208,6 @@ func (r *TenantResource) Update(ctx context.Context, req resource.UpdateRequest,
 	)
 }
 
-
 func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data TenantResourceModel
 
@@ -243,29 +225,31 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		fabricName = data.FabricName.ValueString()
 	}
 
-	// Cascading delete: Deallocate servers before deleting tenant
+	// Safe delete workflow:
+	// Always query backend tenant state first (never trust Terraform state for allocations).
+	// If GPUs are still allocated, deallocate them before deleting the tenant.
 	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
 	if err != nil {
-		// If we can't get tenant info, log warning but proceed with deletion
 		resp.Diagnostics.AddWarning(
 			"Unable to verify GPU allocation status",
-			fmt.Sprintf("Could not check if GPUs are allocated: %s. Proceeding with deletion.", err),
+			fmt.Sprintf("Could not check allocated GPUs before tenant deletion: %s. Proceeding with delete request.", err),
 		)
-	} else if tenantInfo != nil && tenantInfo.GpusAllocated > 0 && len(tenantInfo.Servers) > 0 {
-		// Deallocate all servers first
-		resp.Diagnostics.AddWarning(
-			"Deallocating servers",
-			fmt.Sprintf("Tenant %s has %d GPUs allocated across %d servers. Deallocating servers before deletion: %v", 
-				tenantName, tenantInfo.GpusAllocated, len(tenantInfo.Servers), tenantInfo.Servers),
-		)
-		
-		err = r.client.UpdateTenantServers(tenantName, "DELETE", tenantInfo.Servers)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Failed to deallocate servers",
-				fmt.Sprintf("Unable to deallocate servers before tenant deletion: %s", err),
+	} else if tenantInfo != nil {
+		toFree := ServersForDeallocation(tenantInfo)
+		if len(toFree) > 0 {
+			resp.Diagnostics.AddWarning(
+				"Deallocating tenant servers before delete",
+				fmt.Sprintf("Tenant %s has allocated servers: %v. Sending DELETE server deallocation first.", tenantName, toFree),
 			)
-			return
+
+			err = r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "DELETE", toFree, nil)
+			if err != nil {
+				resp.Diagnostics.AddError(
+					"Failed to deallocate servers",
+					fmt.Sprintf("Unable to deallocate tenant servers before delete: %s", err),
+				)
+				return
+			}
 		}
 	}
 
