@@ -1,0 +1,10 @@
+# One-time setup: copy this file to `fabric.identity.auto.tfvars` (gitignored) and edit.
+# Terraform loads `*.auto.tfvars` automatically — you do not pass these on every command.
+#
+#   cp fabric.identity.auto.tfvars.example fabric.identity.auto.tfvars
+#
+# Override any time: `terraform apply -var='api_endpoint=...'` (CLI wins over this file).
+
+api_endpoint = "http://localhost:8787"
+fabric_name  = "1SU-Fabric172202"
+tenant_name  = "my-tenant"

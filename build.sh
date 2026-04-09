@@ -4,8 +4,11 @@ set -e
 
 echo "Building Terraform Provider Docker Image..."
 
-# Build the Docker image
-docker build -t terraform-fabricapi:latest .
+# This repo should build on hosts that don't have Docker buildx installed.
+# If you *do* have BuildKit/buildx, you can still opt in for faster builds:
+#   DOCKER_BUILDKIT=1 ./build.sh
+: "${DOCKER_BUILDKIT:=0}"
+DOCKER_BUILDKIT="${DOCKER_BUILDKIT}" docker build -t terraform-fabricapi:latest .
 
 echo "Build complete!"
 echo ""

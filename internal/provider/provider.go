@@ -71,11 +71,11 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 	}
 
 	if endpoint == "" {
-		endpoint = "http://worker07.air.nvidia.com:22886"
+		endpoint = "http://localhost:8787"
 	}
 
 	if fabric == "" {
-		fabric = "fabi"
+		fabric = "1SU-Fabric172202"
 	}
 
 	client := &APIClient{
@@ -91,6 +91,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewTenantResource,
 		NewTenantServersResource,
+		NewVpcPeeringResource,
 	}
 }
 
@@ -99,5 +100,3 @@ func (p *FabricAPIProvider) DataSources(ctx context.Context) []func() datasource
 		NewTenantsDataSource,
 	}
 }
-
-
