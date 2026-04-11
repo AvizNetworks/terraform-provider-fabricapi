@@ -3,14 +3,10 @@ variable "tenant_name" {
   type        = string
 }
 
-variable "tenant_fabric" {
-  description = "Fabric where tenant lives (used to resolve tenant.vnets + defaultStorageName)."
+variable "fabric" {
+  description = "Fabric for tenant lookup and VPC peering API. Leave empty to use provider fabric (FABRIC_NAME). One value covers both; split overrides are not modeled in this example."
   type        = string
-}
-
-variable "target_fabric" {
-  description = "Fabric used in the VPC peering API endpoint: /fabrics/{target_fabric}/vpcpeering"
-  type        = string
+  default     = ""
 }
 
 variable "vpcpeering_name" {

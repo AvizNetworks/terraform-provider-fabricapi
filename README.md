@@ -229,6 +229,11 @@ This check is based on live API data (not Terraform state), so both workflows ar
 - explicit two-step deallocate then delete
 - direct tenant delete with automatic pre-delete deallocation
 
+#### Tenant deletion inputs
+
+`terraform destroy` should only require `tenant_name` (and optionally `fabric_name` if you override it on the resource).
+`description` and `max_gpus_allowed` are required for create, but are not required to be re-specified for destroy.
+
 ## Reusing API endpoint, fabric, and tenant name
 
 Set `api_endpoint`, `fabric_name`, and `tenant_name` once in `examples/fabric.identity.auto.tfvars` (copy from `fabric.identity.auto.tfvars.example`). Terraform auto-loads `*.auto.tfvars`, so later `terraform apply` / `destroy` commands do not need those three `-var=...` flags. Override any single run with `-var='api_endpoint=...'` (CLI wins). Details: `examples/fabric-identity.md`.

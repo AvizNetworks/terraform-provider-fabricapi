@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -59,14 +60,18 @@ func (r *TenantResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 
 			"description": schema.StringAttribute{
-				Required: true,
+				// Optional in schema so `terraform destroy` doesn't require passing it again.
+				// Enforced as required at Create-time.
+				Optional: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 
 			"max_gpus_allowed": schema.Int64Attribute{
-				Required: true,
+				// Optional in schema so `terraform destroy` doesn't require passing it again.
+				// Enforced as required at Create-time.
+				Optional: true,
 				PlanModifiers: []planmodifier.Int64{
 					int64planmodifier.RequiresReplace(),
 				},
@@ -114,6 +119,23 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// `description` and `max_gpus_allowed` are optional in schema to keep destroy UX clean,
+	// but they are required by the API for tenant creation.
+	if data.Description.IsNull() || data.Description.IsUnknown() || strings.TrimSpace(data.Description.ValueString()) == "" {
+		resp.Diagnostics.AddError(
+			"Missing required attribute",
+			"`description` must be set for tenant creation.",
+		)
+		return
+	}
+	if data.MaxGpusAllowed.IsNull() || data.MaxGpusAllowed.IsUnknown() || data.MaxGpusAllowed.ValueInt64() <= 0 {
+		resp.Diagnostics.AddError(
+			"Missing required attribute",
+			"`max_gpus_allowed` must be set (> 0) for tenant creation.",
+		)
+		return
+	}
+
 	// Get fabric name - use resource override if provided, otherwise use client default
 	fabricName := r.client.Fabric
 	if !data.FabricName.IsNull() && data.FabricName.ValueString() != "" {
@@ -122,7 +144,7 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	tenantReq := TenantRequest{
 		TenantName:     data.TenantName.ValueString(),
-		Description:    data.Description.ValueString(),
+		Description:    strings.TrimSpace(data.Description.ValueString()),
 		MaxGpusAllowed: int(data.MaxGpusAllowed.ValueInt64()),
 	}
 
@@ -147,7 +169,7 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 	plannedName := data.TenantName.ValueString()
 	data.ID = types.StringValue(plannedName)
 	data.TenantName = types.StringValue(plannedName)
-	data.Description = types.StringValue(data.Description.ValueString())
+	data.Description = types.StringValue(strings.TrimSpace(data.Description.ValueString()))
 	data.MaxGpusAllowed = types.Int64Value(data.MaxGpusAllowed.ValueInt64())
 	if data.FabricName.IsNull() || data.FabricName.ValueString() == "" {
 		data.FabricName = types.StringNull()

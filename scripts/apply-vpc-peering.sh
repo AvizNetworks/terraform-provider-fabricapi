@@ -26,8 +26,8 @@ CHDIR="${TF_CHDIR:-examples/decoupled/03-vpcpeering}"
 FABRIC_API_ENDPOINT="${FABRIC_API_ENDPOINT:-http://localhost:8787}"
 FABRIC_NAME="${FABRIC_NAME:-8407}"
 TENANT_NAME="${TENANT_NAME:-tenant-003}"
-TENANT_FABRIC="${TENANT_FABRIC:-$FABRIC_NAME}"
-TARGET_FABRIC="${TARGET_FABRIC:-$FABRIC_NAME}"
+# Optional override for examples/decoupled/03-vpcpeering `fabric`. If unset, Terraform uses provider fabric (FABRIC_NAME).
+FABRIC_FOR_VPC="${FABRIC_FOR_VPC:-}"
 VPC_PEERING_NAME="${VPC_PEERING_NAME:-tenant-003-storage-peering}"
 DELETE_ON_DESTROY="${DELETE_ON_DESTROY:-false}"
 
@@ -56,10 +56,14 @@ if [[ "$force" == "1" || "$force" == "true" || "$force" == "yes" ]]; then
 fi
 
 echo "==> terraform apply -auto-approve"
-run_tf -chdir="$CHDIR" apply -auto-approve \
-  "${REPLACE[@]}" \
-  -var="tenant_fabric=$TENANT_FABRIC" \
-  -var="tenant_name=$TENANT_NAME" \
-  -var="target_fabric=$TARGET_FABRIC" \
-  -var="vpcpeering_name=$VPC_PEERING_NAME" \
+TF_APPLY_ARGS=(
+  -chdir="$CHDIR" apply -auto-approve
+  "${REPLACE[@]}"
+  -var="tenant_name=$TENANT_NAME"
+  -var="vpcpeering_name=$VPC_PEERING_NAME"
   -var="delete_on_destroy=$DELETE_ON_DESTROY"
+)
+if [[ -n "$FABRIC_FOR_VPC" ]]; then
+  TF_APPLY_ARGS+=(-var="fabric=$FABRIC_FOR_VPC")
+fi
+run_tf "${TF_APPLY_ARGS[@]}"

@@ -1,6 +1,7 @@
 variable "tenant_fabric" {
-  description = "Fabric name for GPU allocation endpoint /fabrics/{fabric}/tenants/{tenant}."
+  description = "Fabric for /fabrics/{fabric}/tenants/{tenant}. Leave empty to use provider fabric (FABRIC_NAME / provider \"fabric\")."
   type        = string
+  default     = ""
 }
 
 variable "tenant_name" {
@@ -21,5 +22,6 @@ variable "operation" {
 variable "shared" {
   description = "Optional shared flag in PATCH payload."
   type        = bool
+  default     = false
 }
 

@@ -208,7 +208,7 @@ func (r *TenantServersResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 	if tenantInfo == nil {
-		resp.Diagnostics.Append(resp.State.RemoveResource(ctx)...)
+		resp.State.RemoveResource(ctx)
 		return
 	}
 
@@ -342,13 +342,13 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 	if tenantInfo == nil {
 		// Tenant already gone; nothing to deallocate.
-		resp.Diagnostics.Append(resp.State.RemoveResource(ctx)...)
+		resp.State.RemoveResource(ctx)
 		return
 	}
 
 	toFree := normalizedServersFromTenant(tenantInfo)
 	if len(toFree) == 0 {
-		resp.Diagnostics.Append(resp.State.RemoveResource(ctx)...)
+		resp.State.RemoveResource(ctx)
 		return
 	}
 
@@ -359,7 +359,7 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 	}
 
 	// Deallocation completed; clear resource from Terraform state so destroy completes cleanly.
-	resp.Diagnostics.Append(resp.State.RemoveResource(ctx)...)
+	resp.State.RemoveResource(ctx)
 }
 
 func resolveFabricName(providerFabric string, override types.String) string {

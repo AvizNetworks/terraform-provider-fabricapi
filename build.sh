@@ -8,7 +8,11 @@ echo "Building Terraform Provider Docker Image..."
 # If you *do* have BuildKit/buildx, you can still opt in for faster builds:
 #   DOCKER_BUILDKIT=1 ./build.sh
 : "${DOCKER_BUILDKIT:=0}"
-DOCKER_BUILDKIT="${DOCKER_BUILDKIT}" docker build -t terraform-fabricapi:latest .
+# Default: unique each run so Docker does not reuse a stale Go binary after provider edits.
+: "${CACHEBUST:=$(date +%s)}"
+DOCKER_BUILDKIT="${DOCKER_BUILDKIT}" docker build \
+  --build-arg "CACHEBUST=${CACHEBUST}" \
+  -t terraform-fabricapi:latest .
 
 echo "Build complete!"
 echo ""
