@@ -1,17 +1,17 @@
 variable "api_endpoint" {
-  description = "API endpoint URL"
+  description = "API endpoint URL. For day-to-day use, set once in fabric.identity.auto.tfvars (see fabric.identity.auto.tfvars.example)."
   type        = string
-  default     = "http://worker07.air.nvidia.com:22886"
+  default     = "http://localhost:8787"
 }
 
 variable "fabric_name" {
-  description = "Fabric name"
+  description = "Fabric name. Prefer fabric.identity.auto.tfvars so you do not repeat on every command."
   type        = string
-  default     = "fabi"
+  default     = "1SU-Fabric172202"
 }
 
 variable "tenant_name" {
-  description = "Name of the tenant to create"
+  description = "Tenant name. Prefer fabric.identity.auto.tfvars so you do not repeat on every command."
   type        = string
   validation {
     condition     = length(var.tenant_name) > 0
@@ -20,9 +20,13 @@ variable "tenant_name" {
 }
 
 variable "tenant_description" {
-  description = "Description of the tenant"
+  description = <<-EOT
+    Optional tenant description for POST /fabrics/{fabric}/tenants.
+    If null or blank, a description is generated from tenant_name, fabric_name, and max_gpus_allowed.
+  EOT
   type        = string
-  default     = "Managed by Terraform"
+  default     = null
+  nullable    = true
 }
 
 variable "max_gpus_allowed" {
@@ -37,7 +41,7 @@ variable "max_gpus_allowed" {
     - 32 GPUs = max 4 servers
   EOT
   type        = number
-  default     = 16
+  default     = 32
   validation {
     condition     = contains([8, 16, 24, 32], var.max_gpus_allowed)
     error_message = "Max GPUs must be a multiple of 8: valid values are 8, 16, 24, or 32."
@@ -48,13 +52,9 @@ variable "servers" {
   description = <<-EOT
     List of servers to allocate GPUs from.
     
-    Available servers:
-    - hgx-su00-h00
-    - hgx-su00-h01
-    - hgx-su01-h00
-    - hgx-su01-h01
+    Server IDs (varies by deployment).
     
-    Server count must match max_gpus_allowed:
+    Server count must fit within max_gpus_allowed:
     - 8 GPUs  = 1 server max
     - 16 GPUs = 2 servers max
     - 24 GPUs = 3 servers max
@@ -63,13 +63,11 @@ variable "servers" {
   type        = list(string)
   default     = []
   validation {
-    condition = alltrue([
-      for server in var.servers : contains(
-        ["hgx-su00-h00", "hgx-su00-h01", "hgx-su01-h00", "hgx-su01-h01"],
-        server
-      )
-    ])
-    error_message = "Servers must be from the valid list: hgx-su00-h00, hgx-su00-h01, hgx-su01-h00, hgx-su01-h01."
+    # Don't hardcode server names here; real Fabric deployments may use different server IDs.
+    # Variable validation blocks can only reference the variable being validated (var.servers),
+    # so cross-variable checks (against var.max_gpus_allowed) are enforced elsewhere.
+    condition     = length(var.servers) == 0 || (length(var.servers) >= 1 && length(var.servers) <= 4)
+    error_message = "When servers are provided, server count must be 1-4."
   }
 }
 
@@ -83,6 +81,18 @@ variable "operation" {
   }
 }
 
+variable "shared" {
+  description = <<-EOT
+    Shared GPU allocation flag for PATCH /fabrics/{fabric}/tenants/{tenant} (per server in JSON).
+    Must match API expectations: same as curl body
+    {"operation":"ADD","servers":[{"serverName":"...","shared":true}]}.
+    When true/false, the provider sends that value for every server. When null (omit in .tfvars),
+    the provider omits `shared` from each server object (API may treat differently).
+  EOT
+  type        = bool
+  default     = true
+}
+
 variable "manage_tenant" {
   description = "Whether to manage the tenant resource (create/update/delete). Set to false to only manage server assignments for existing tenants."
   type        = bool
@@ -91,6 +101,34 @@ variable "manage_tenant" {
 
 variable "import_existing_tenant" {
   description = "Set to true if you want to import an existing tenant into Terraform state"
+  type        = bool
+  default     = false
+}
+
+variable "create_vpcpeering" {
+  description = "If true, create a VPC peering after tenant + GPU allocation (default: on)."
+  type        = bool
+  default     = true
+}
+
+variable "vpcpeering_target_fabric" {
+  description = <<-EOT
+    Fabric for POST /fabrics/{target_fabric}/vpcpeering.
+    If null, uses fabric_name (same fabric as the provider default).
+  EOT
+  type        = string
+  default     = null
+  nullable    = true
+}
+
+variable "vpcpeering_name" {
+  description = "Name for the VPC peering object."
+  type        = string
+  default     = "tf-vpcpeering"
+}
+
+variable "vpcpeering_delete_on_destroy" {
+  description = "If true, attempt to delete vpcpeering on destroy (not implemented by this provider yet)."
   type        = bool
   default     = false
 }

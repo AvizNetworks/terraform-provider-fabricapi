@@ -1,0 +1,318 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"time"
+
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
+
+var _ resource.Resource = &VpcPeeringResource{}
+
+func NewVpcPeeringResource() resource.Resource {
+	return &VpcPeeringResource{}
+}
+
+type VpcPeeringResource struct {
+	client *APIClient
+}
+
+type VpcPeeringResourceModel struct {
+	TenantName   types.String `tfsdk:"tenant_name"`
+	TargetFabric types.String `tfsdk:"target_fabric"`
+	Name         types.String `tfsdk:"name"`
+
+	// Optional override for the fabric where the tenant lives.
+	// If unset, we use the provider's configured fabric.
+	TenantFabric types.String `tfsdk:"tenant_fabric"`
+
+	DeleteOnDestroy types.Bool `tfsdk:"delete_on_destroy"`
+
+	// Resolved from GET /fabrics and GET /{fabric}/tenants/{tenant}.
+	VpcName     types.String `tfsdk:"vpcname"`
+	PeerVpcName types.String `tfsdk:"peervpcname"`
+
+	ID types.String `tfsdk:"id"`
+}
+
+func (r *VpcPeeringResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_vpcpeering"
+}
+
+func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		MarkdownDescription: "Fabric API VPC Peering Resource",
+		Attributes: map[string]schema.Attribute{
+			"tenant_name": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					// Tenant name change requires a new peering.
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"target_fabric": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Fabric passed to the VPC peering API. Omit to use provider fabric (FABRIC_NAME / provider \"fabric\"); stored after apply.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"name": schema.StringAttribute{
+				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"tenant_fabric": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				MarkdownDescription: "Fabric for tenant lookup. Omit to use provider fabric; stored after apply.",
+			},
+			"delete_on_destroy": schema.BoolAttribute{
+				Optional: true,
+			},
+			"vpcname": schema.StringAttribute{
+				Computed: true,
+			},
+			"peervpcname": schema.StringAttribute{
+				Optional: true,
+				Computed: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"id": schema.StringAttribute{
+				Computed: true,
+			},
+		},
+	}
+}
+
+func (r *VpcPeeringResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+
+	client, ok := req.ProviderData.(*APIClient)
+	if !ok {
+		resp.Diagnostics.AddError(
+			"Unexpected Resource Configure Type",
+			fmt.Sprintf("Expected *APIClient, got: %T", req.ProviderData),
+		)
+		return
+	}
+	r.client = client
+}
+
+func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var data VpcPeeringResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	tenantFabric := resolveVpcPeeringFabric(r.client.Fabric, data.TenantFabric)
+	targetFab := resolveVpcPeeringFabric(r.client.Fabric, data.TargetFabric)
+	if tenantFabric == "" || targetFab == "" {
+		resp.Diagnostics.AddError(
+			"Missing fabric",
+			"Set target_fabric and/or tenant_fabric, or configure provider fabric via FABRIC_NAME / provider \"fabric\".",
+		)
+		return
+	}
+
+	// Peer/storage VPC name: use explicit Terraform value when set; otherwise resolve from
+	// GET /fabrics → defaultStorageName for target_fabric (real simulator), with legacy fallback.
+	storageVPC := "Storage-VPC"
+	if !data.PeerVpcName.IsNull() && !data.PeerVpcName.IsUnknown() && data.PeerVpcName.ValueString() != "" {
+		storageVPC = data.PeerVpcName.ValueString()
+	} else {
+		if fabrics, err := r.client.GetFabrics(ctx); err == nil {
+			for _, f := range fabrics {
+				if f.FabricName == targetFab && f.DefaultStorageName != "" {
+					storageVPC = f.DefaultStorageName
+					break
+				}
+			}
+		}
+	}
+
+	// Ensure tenant is visible (helps right after create / GPU alloc).
+	if err := r.client.WaitForTenantReady(ctx, tenantFabric, data.TenantName.ValueString(), 60*time.Second); err != nil {
+		resp.Diagnostics.AddError(
+			"Tenant not ready",
+			fmt.Sprintf("Tenant %q in fabric %q is not readable yet (needed for VPC peering): %s", data.TenantName.ValueString(), tenantFabric, err),
+		)
+		return
+	}
+
+	// Resolve tenant.vnets.name from GET /fabrics/{fabric}/tenants/{tenant}.
+	tenant, err := r.client.GetTenantWithFabric(tenantFabric, data.TenantName.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to get tenant: %s", err))
+		return
+	}
+	if tenant == nil || tenant.VnetsName == "" {
+		resp.Diagnostics.AddError(
+			"Missing tenant vnets name",
+			fmt.Sprintf("Could not find tenant.vnets.name for tenant %s in fabric %s", data.TenantName.ValueString(), tenantFabric),
+		)
+		return
+	}
+
+	vpcName := tenant.VnetsName
+	// Real APIs return the exact vnet name the controller expects; do not rewrite it by default.
+	// Mock backends that omit the "-north-south" suffix can opt in:
+	//   FABRICAPI_VPC_APPEND_NORTH_SOUTH=1
+	appendNorthSouth := strings.ToLower(os.Getenv("FABRICAPI_VPC_APPEND_NORTH_SOUTH"))
+	if appendNorthSouth == "1" || appendNorthSouth == "true" || appendNorthSouth == "yes" {
+		if vpcName != "" && !strings.HasSuffix(vpcName, "-north-south") {
+			vpcName = vpcName + "-north-south"
+		}
+	}
+
+	reqBody := VpcPeeringRequest{
+		Name:        data.Name.ValueString(),
+		VpcName:     vpcName,
+		PeerVpcName: storageVPC,
+	}
+
+	respBody, err := r.client.CreateVpcPeeringWithResponse(ctx, targetFab, reqBody)
+	if err != nil {
+		if vpcPeeringErrMeansAlreadyExists(err) {
+			fmt.Fprintf(os.Stderr,
+				"[fabricapi] VPC peering: POST returned already-exists/conflict; treating as success (idempotent). %s\n",
+				err.Error(),
+			)
+			resp.Diagnostics.AddWarning("VPC peering already exists", err.Error())
+		} else {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create vpcpeering: %s", err))
+			return
+		}
+	} else {
+		// Visible during terraform apply / pytest integration (provider stderr).
+		fmt.Fprintf(os.Stderr,
+			"[fabricapi] VPC peering done: GET tenant + POST vpcpeering succeeded (name=%s target_fabric=%s vpcname=%s peervpcname=%s)\n",
+			reqBody.Name, targetFab, reqBody.VpcName, reqBody.PeerVpcName,
+		)
+		if respBody != "" {
+			fmt.Fprintf(os.Stderr, "[fabricapi] vpcpeering backend response: %s\n", respBody)
+			resp.Diagnostics.AddWarning("VPC peering created", respBody)
+		}
+	}
+
+	data.VpcName = types.StringValue(reqBody.VpcName)
+	data.PeerVpcName = types.StringValue(reqBody.PeerVpcName)
+	data.ID = types.StringValue(data.Name.ValueString())
+	// Persist effective fabrics (after ModifyPlan / resolve) so state matches API usage.
+	data.TargetFabric = types.StringValue(targetFab)
+	data.TenantFabric = types.StringValue(tenantFabric)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// vpcPeeringErrMeansAlreadyExists treats common duplicate / idempotent responses as success so
+// apply does not fail when peering (or same name) already exists on the API but Terraform is creating again.
+func vpcPeeringErrMeansAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "409") ||
+		strings.Contains(msg, "already exist") ||
+		strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "conflict") ||
+		strings.Contains(msg, "identical") ||
+		strings.Contains(msg, "not modified")
+}
+
+func resolveVpcPeeringFabric(providerFabric string, override types.String) string {
+	if override.IsNull() || override.IsUnknown() {
+		return providerFabric
+	}
+	s := override.ValueString()
+	if s == "" {
+		return providerFabric
+	}
+	return s
+}
+
+func (r *VpcPeeringResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var data VpcPeeringResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	if r.client == nil {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+
+	tenantFabric := resolveVpcPeeringFabric(r.client.Fabric, data.TenantFabric)
+	tenantName := data.TenantName.ValueString()
+	if tenantName == "" {
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+
+	tenant, err := r.client.GetTenantWithFabric(tenantFabric, tenantName)
+	if err != nil {
+		resp.Diagnostics.AddWarning(
+			"VPC peering read skipped",
+			fmt.Sprintf("Could not verify tenant %q in fabric %q: %s. Terraform state left unchanged.", tenantName, tenantFabric, err),
+		)
+		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+		return
+	}
+	if tenant == nil {
+		// GET tenant returns 404 — tenant was deleted. Drop peering from state so apply can create again.
+		fmt.Fprintf(os.Stderr,
+			"[fabricapi] vpcpeering Read: tenant %q not found in fabric %q (GET 404); removing fabricapi_vpcpeering from Terraform state\n",
+			tenantName, tenantFabric,
+		)
+		resp.Diagnostics.AddWarning(
+			"VPC peering removed from Terraform state",
+			fmt.Sprintf("Tenant %q not found in fabric %q. Run apply when the tenant exists again to recreate peering.", tenantName, tenantFabric),
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (r *VpcPeeringResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	resp.Diagnostics.AddError(
+		"Update not supported",
+		"Changing VPC peering inputs requires recreating the resource.",
+	)
+}
+
+func (r *VpcPeeringResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var data VpcPeeringResourceModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// For now we don't try to delete automatically because the API delete endpoint
+	// isn't implemented in this provider yet. Keep destroy reliable.
+	if !data.DeleteOnDestroy.IsNull() && data.DeleteOnDestroy.ValueBool() {
+		resp.Diagnostics.AddWarning(
+			"Delete on destroy not implemented",
+			"This provider currently creates vpcpeering but does not delete it.",
+		)
+	}
+
+	// Even though we don't delete the remote resource, remove it from Terraform state
+	// so that destroy completes cleanly and future plans are accurate.
+	resp.State.RemoveResource(ctx)
+}

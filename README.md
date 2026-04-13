@@ -64,14 +64,16 @@ Place the files as follows:
 
 ### 1. Interactive Testing
 
-Start an interactive shell in the container:A
+Start an interactive shell in the container:
 ```bash
 docker run -it --rm terraform-fabricapi:latest 
 
 terraform init
 terraform apply \
   -var="tenant_name=test_tenant" \
-  -var='servers=["hgx-su00-h00","hgx-su00-h01"]' \
+  -var='max_gpus_allowed=32' \
+  -var='servers=["hgx-su00-h00","hgx-su00-h01","hgx-su00-h02","hgx-su00-h03"]' \
+  -var='shared=true' \
   -auto-approve
 ```
 
@@ -153,7 +155,7 @@ export FABRIC_NAME="fab"
 resource "fabricapi_tenant" "example" {
   tenant_name      = "tenant2"
   description      = "Test tenant for GPU workloads"
-  max_gpus_allowed = 16
+  max_gpus_allowed = 32 # 8, 16, 24, or 32 — must be >= len(servers) * 8
 }
 ```
 
@@ -161,22 +163,92 @@ resource "fabricapi_tenant" "example" {
 
 ```hcl
 resource "fabricapi_tenant_servers" "add_servers" {
+  # Tenant must already exist. Use tenant resource reference (implicit dependency)
+  # or explicit depends_on for sequencing.
+  # Optional: override the fabric used in the backend URL
+  # /fabrics/{fabric}/tenants/{tenant}. If unset, uses provider-level fabric.
+  # fabric_name = "1SU-Fabric170619"
+  tenant_name = fabricapi_tenant.example.tenant_name
   operation = "ADD"
-  servers   = [
+  shared    = true
+  # Up to 4 servers (32 GPUs max); list every host you want GPUs from
+  servers = [
     "hgx-su00-h00",
-    "hgx-su00-h01"
+    "hgx-su00-h01",
+    "hgx-su00-h02",
+    "hgx-su00-h03",
   ]
-  
+
   depends_on = [fabricapi_tenant.example]
 }
 
 resource "fabricapi_tenant_servers" "remove_servers" {
   operation = "REMOVE"
+  shared    = false
   servers   = [
     "hgx-su00-h00"
   ]
 }
 ```
+
+`fabricapi_tenant_servers` is PATCH-only and operates on an existing tenant.
+On updates, the provider compares current allocated servers vs desired `servers` and issues
+the required `ADD` / `DELETE` PATCH calls.
+
+#### Important: `servers` is the source of truth on updates
+
+- **Updates are declarative**: the `servers` list represents the desired final allocation.
+  To deallocate one server, remove it from `servers` and run `terraform apply`.
+- **Changing only `operation` does not force a deallocation/allocation on update**.
+  If `servers` does not change, Terraform has nothing to reconcile and no PATCH call will be sent.
+  If you want a pure "do DELETE now" workflow, use a separate resource instance or `terraform destroy -target=...`.
+
+### Two-step apply pattern
+
+You can apply in two explicit phases:
+
+```bash
+# Step 1: tenant only
+terraform apply -target=fabricapi_tenant.example
+
+# Step 2: server mapping for existing tenant
+terraform apply -target=fabricapi_tenant_servers.add_servers
+```
+
+With normal dependencies (`tenant_name` reference or `depends_on`), a single
+`terraform apply` also sequences tenant first, then tenant_servers.
+
+### Destroy ordering
+
+You can destroy `fabricapi_tenant_servers` explicitly before `fabricapi_tenant` (recommended for clear intent).
+
+If a tenant delete is requested while GPUs are still allocated, the tenant delete flow performs a backend check
+(`GET /fabrics/{fabric}/tenants/{tenant}`) and deallocates allocated servers first, then deletes the tenant.
+This check is based on live API data (not Terraform state), so both workflows are supported:
+
+- explicit two-step deallocate then delete
+- direct tenant delete with automatic pre-delete deallocation
+
+#### Tenant deletion inputs
+
+`terraform destroy` should only require `tenant_name` (and optionally `fabric_name` if you override it on the resource).
+`description` and `max_gpus_allowed` are required for create, but are not required to be re-specified for destroy.
+
+## Reusing API endpoint, fabric, and tenant name
+
+Set `api_endpoint`, `fabric_name`, and `tenant_name` once in `examples/fabric.identity.auto.tfvars` (copy from `fabric.identity.auto.tfvars.example`). Terraform auto-loads `*.auto.tfvars`, so later `terraform apply` / `destroy` commands do not need those three `-var=...` flags. Override any single run with `-var='api_endpoint=...'` (CLI wins). Details: `examples/fabric-identity.md`.
+
+## Decoupling apply into 3 commands
+
+The original `examples/main.tf` chains tenant creation → GPU allocation → VPC peering in a single `terraform apply`.
+
+If you want three separate commands/applies (one per action), use:
+
+- `examples/decoupled/01-tenant`: create tenant
+- `examples/decoupled/02-servers`: allocate/deallocate GPUs (tenant servers)
+- `examples/decoupled/03-vpcpeering`: create VPC peering
+
+See `examples/decoupled/README.md` for the exact commands.
 
 ## Troubleshooting
 

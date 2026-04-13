@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -21,8 +24,10 @@ type TenantServersResource struct {
 
 type TenantServersResourceModel struct {
 	TenantName types.String `tfsdk:"tenant_name"`
+	FabricName types.String `tfsdk:"fabric_name"`
 	Operation  types.String `tfsdk:"operation"`
 	Servers    types.List   `tfsdk:"servers"`
+	Shared     types.Bool   `tfsdk:"shared"`
 	ID         types.String `tfsdk:"id"`
 }
 
@@ -39,6 +44,10 @@ func (r *TenantServersResource) Schema(ctx context.Context, req resource.SchemaR
 				MarkdownDescription: "Name of the tenant",
 				Required:            true,
 			},
+			"fabric_name": schema.StringAttribute{
+				MarkdownDescription: "Fabric name for the backend URL /fabrics/{fabric}/tenants/{tenant}. If unset, uses provider-level fabric.",
+				Optional:            true,
+			},
 			"operation": schema.StringAttribute{
 				MarkdownDescription: "Operation to perform: ADD, DELETE, or REMOVE (REMOVE is alias for DELETE)",
 				Required:            true,
@@ -47,6 +56,10 @@ func (r *TenantServersResource) Schema(ctx context.Context, req resource.SchemaR
 				MarkdownDescription: "List of server names",
 				Required:            true,
 				ElementType:         types.StringType,
+			},
+			"shared": schema.BoolAttribute{
+				MarkdownDescription: "Optional shared GPU allocation flag. When set, value is sent in PATCH payload for every server.",
+				Optional:            true,
 			},
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -83,6 +96,9 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 
+	fabricName := resolveFabricName(r.client.Fabric, data.FabricName)
+	tenantName := data.TenantName.ValueString()
+
 	var servers []string
 	resp.Diagnostics.Append(data.Servers.ElementsAs(ctx, &servers, false)...)
 
@@ -99,10 +115,22 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 
-	tenantName := data.TenantName.ValueString()
+	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
+		return
+	}
+	if tenantInfo == nil {
+		resp.Diagnostics.AddError(
+			"Tenant not found",
+			fmt.Sprintf("Tenant %q does not exist in fabric %q. Create the tenant first.", tenantName, fabricName),
+		)
+		return
+	}
+
 	// --- PRE-ALLOCATION CONFLICT CHECK ---
 	if operation == "ADD" {
-		allocated, err := r.client.GetAllocatedServers(ctx, r.client.Fabric)
+		allocated, err := r.client.GetAllocatedServers(ctx, fabricName)
 		if err != nil {
 			resp.Diagnostics.AddError("Client Error", err.Error())
 			return
@@ -118,13 +146,46 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 			}
 		}
 	}
-	err := r.client.UpdateTenantServers(tenantName, operation, servers)
+	if operation == "ADD" {
+		if err := r.client.WaitForTenantReady(ctx, fabricName, tenantName, 60*time.Second); err != nil {
+			resp.Diagnostics.AddError(
+				"Tenant not ready",
+				fmt.Sprintf("Cannot allocate GPUs until tenant %s is readable: %s", tenantName, err),
+			)
+			return
+		}
+	}
+	var shared *bool
+	if !data.Shared.IsNull() && !data.Shared.IsUnknown() {
+		v := data.Shared.ValueBool()
+		shared = &v
+	}
+
+	err = r.client.UpdateTenantServersWithFabric(fabricName, tenantName, operation, servers, shared)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update tenant servers: %s", err))
 		return
 	}
 
-	data.ID = types.StringValue(fmt.Sprintf("%s-%s-%d", tenantName, operation, len(servers)))
+	// Read back from API so state reflects the backend instead of only the request.
+	refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
+		return
+	}
+	if refreshed == nil {
+		resp.Diagnostics.AddError("Tenant not found", fmt.Sprintf("Tenant %q disappeared after update.", tenantName))
+		return
+	}
+
+	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.Servers = serverList
+	data.Operation = types.StringValue(operation)
+	data.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -138,37 +199,77 @@ func (r *TenantServersResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
+	fabricName := resolveFabricName(r.client.Fabric, data.FabricName)
+	tenantName := data.TenantName.ValueString()
+
+	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
+		return
+	}
+	if tenantInfo == nil {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(tenantInfo))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.Servers = serverList
+	data.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data TenantServersResourceModel
-
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
+	var plan TenantServersResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	var servers []string
-	resp.Diagnostics.Append(data.Servers.ElementsAs(ctx, &servers, false)...)
+	fabricName := resolveFabricName(r.client.Fabric, plan.FabricName)
+	tenantName := plan.TenantName.ValueString()
 
-	if resp.Diagnostics.HasError() {
+	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
+		return
+	}
+	if tenantInfo == nil {
+		resp.Diagnostics.AddError(
+			"Tenant not found",
+			fmt.Sprintf("Tenant %q does not exist in fabric %q. Create the tenant first.", tenantName, fabricName),
+		)
 		return
 	}
 
-	operation := data.Operation.ValueString()
-	
-	// --- PRE-ALLOCATION CONFLICT CHECK ---
-	if operation == "ADD" {
-		allocated, err := r.client.GetAllocatedServers(ctx, r.client.Fabric)
+	var desiredServers []string
+	resp.Diagnostics.Append(plan.Servers.ElementsAs(ctx, &desiredServers, false)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	desiredServers = normalizeServerList(desiredServers)
+	currentServers := normalizedServersFromTenant(tenantInfo)
+
+	toAdd, toDelete := diffServers(currentServers, desiredServers)
+
+	if len(toDelete) > 0 {
+		if err := r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "DELETE", toDelete, nil); err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to deallocate tenant servers: %s", err))
+			return
+		}
+	}
+
+	if len(toAdd) > 0 {
+		allocated, err := r.client.GetAllocatedServers(ctx, fabricName)
 		if err != nil {
 			resp.Diagnostics.AddError("Client Error", err.Error())
 			return
 		}
-
-		tenantName := data.TenantName.ValueString()
-		for _, s := range servers {
+		for _, s := range toAdd {
 			if owner, exists := allocated[s]; exists && owner != tenantName {
 				resp.Diagnostics.AddError(
 					"Server already allocated",
@@ -177,17 +278,45 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 				return
 			}
 		}
+
+		if err := r.client.WaitForTenantReady(ctx, fabricName, tenantName, 60*time.Second); err != nil {
+			resp.Diagnostics.AddError(
+				"Tenant not ready",
+				fmt.Sprintf("Cannot allocate GPUs until tenant %s is readable: %s", tenantName, err),
+			)
+			return
+		}
+
+		var shared *bool
+		if !plan.Shared.IsNull() && !plan.Shared.IsUnknown() {
+			v := plan.Shared.ValueBool()
+			shared = &v
+		}
+		if err := r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "ADD", toAdd, shared); err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to allocate tenant servers: %s", err))
+			return
+		}
 	}
-	
-	err := r.client.UpdateTenantServers(data.TenantName.ValueString(), operation, servers)
+
+	refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
 	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update tenant servers: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
+		return
+	}
+	if refreshed == nil {
+		resp.Diagnostics.AddError("Tenant not found", fmt.Sprintf("Tenant %q disappeared after update.", tenantName))
 		return
 	}
 
-	data.ID = types.StringValue(fmt.Sprintf("%s-%s-%d", data.TenantName.ValueString(), operation, len(servers)))
+	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	plan.Servers = serverList
+	plan.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
 
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -199,16 +328,92 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		return
 	}
 
-	var servers []string
-	resp.Diagnostics.Append(data.Servers.ElementsAs(ctx, &servers, false)...)
-
-	if resp.Diagnostics.HasError() {
-		return
+	fabricName := r.client.Fabric
+	if !data.FabricName.IsNull() && data.FabricName.ValueString() != "" {
+		fabricName = data.FabricName.ValueString()
 	}
 
-	err := r.client.UpdateTenantServers(data.TenantName.ValueString(), "DELETE", servers)
+	tenantName := data.TenantName.ValueString()
+
+	tenantInfo, err := r.client.GetTenantWithFabric(fabricName, tenantName)
 	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete tenant servers: %s", err))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
 		return
 	}
+	if tenantInfo == nil {
+		// Tenant already gone; nothing to deallocate.
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	toFree := normalizedServersFromTenant(tenantInfo)
+	if len(toFree) == 0 {
+		resp.State.RemoveResource(ctx)
+		return
+	}
+
+	err = r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "DELETE", toFree, nil)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to deallocate tenant servers: %s", err))
+		return
+	}
+
+	// Deallocation completed; clear resource from Terraform state so destroy completes cleanly.
+	resp.State.RemoveResource(ctx)
 }
+
+func resolveFabricName(providerFabric string, override types.String) string {
+	if !override.IsNull() && override.ValueString() != "" {
+		return override.ValueString()
+	}
+	return providerFabric
+}
+
+func stableTenantServersID(fabricName, tenantName string) string {
+	return fmt.Sprintf("%s:%s", fabricName, tenantName)
+}
+
+func normalizeServerList(in []string) []string {
+	set := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, exists := set[s]; exists {
+			continue
+		}
+		set[s] = struct{}{}
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizedServersFromTenant(t *TenantResponse) []string {
+	return normalizeServerList(ServersForDeallocation(t))
+}
+
+func diffServers(current, desired []string) (toAdd, toDelete []string) {
+	currentSet := make(map[string]struct{}, len(current))
+	desiredSet := make(map[string]struct{}, len(desired))
+	for _, s := range current {
+		currentSet[s] = struct{}{}
+	}
+	for _, s := range desired {
+		desiredSet[s] = struct{}{}
+	}
+	for _, s := range desired {
+		if _, ok := currentSet[s]; !ok {
+			toAdd = append(toAdd, s)
+		}
+	}
+	for _, s := range current {
+		if _, ok := desiredSet[s]; !ok {
+			toDelete = append(toDelete, s)
+		}
+	}
+	return toAdd, toDelete
+}
+

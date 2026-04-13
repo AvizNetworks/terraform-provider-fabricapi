@@ -7,12 +7,28 @@ vendor/
 
 # Terraform
 .terraform/
+.terraform.lock.hcl
+**/.terraform.lock.hcl
 *.tfstate
 *.tfstate.*
 crash.log
 
+# Local identity (endpoint / fabric / tenant) — copy from fabric.identity.auto.tfvars.example
+examples/fabric.identity.auto.tfvars
+
 # Docker
 *.tar
+
+# Python (tests live elsewhere)
+.pytest_cache/
+**/.pytest_cache/
+__pycache__/
+**/__pycache__/
+/pytest.ini
+
+# Local outputs
+examples/tfplan
+*.tfplan
 
 # OS
 .DS_Store

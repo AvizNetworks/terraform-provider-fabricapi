@@ -1,5 +1,6 @@
+# syntax=docker/dockerfile:1
+# BuildKit caches speed up repeat builds (use: DOCKER_BUILDKIT=1 or build.sh).
 FROM golang:1.25-alpine AS builder
-
 
 WORKDIR /build
 
@@ -15,8 +16,12 @@ RUN go mod download
 # Copy source code
 COPY . .
 
-# Build the provider
-RUN CGO_ENABLED=0 GOOS=linux go build -o terraform-provider-fabricapi
+# Rebuild this layer when CACHEBUST changes (build.sh passes `date +%s` by default).
+ARG CACHEBUST=1
+# Build without requiring BuildKit/buildx (works on older Docker installs).
+# Note: This is slower than using BuildKit cache mounts, but is more compatible.
+RUN echo "$CACHEBUST" >/dev/null && go mod tidy && \
+    CGO_ENABLED=0 GOOS=linux go build -o terraform-provider-fabricapi .
 
 # Final stage
 FROM hashicorp/terraform:1.6
