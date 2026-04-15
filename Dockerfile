@@ -16,9 +16,11 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Rebuild this layer when CACHEBUST changes (build.sh passes `date +%s` by default).
+ARG CACHEBUST=1
 # Build without requiring BuildKit/buildx (works on older Docker installs).
 # Note: This is slower than using BuildKit cache mounts, but is more compatible.
-RUN go mod tidy && \
+RUN echo "$CACHEBUST" >/dev/null && go mod tidy && \
     CGO_ENABLED=0 GOOS=linux go build -o terraform-provider-fabricapi .
 
 # Final stage

@@ -4,6 +4,7 @@ variable "tenants" {
     Map of tenant name => settings. Each key creates a separate fabricapi_tenant (separate state address),
     so multiple tenants coexist. When this map is non-empty, legacy flat variables below are ignored.
   EOT
+
   type = map(object({
     description      = string
     max_gpus_allowed = optional(number, 8)
@@ -12,6 +13,7 @@ variable "tenants" {
     webhook_url      = optional(string)
     webhook_events   = optional(list(string))
   }))
+
   default = {}
 }
 
@@ -23,7 +25,7 @@ variable "tenant_name" {
 }
 
 variable "tenant_description" {
-  description = "Legacy: description. Required when using legacy mode (non-empty tenant_name)."
+  description = "Legacy: description. Optional; if omitted, the module generates a non-empty default description."
   type        = string
   default     = ""
 }

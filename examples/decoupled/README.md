@@ -14,7 +14,7 @@ These examples are designed for a strict “user supplies inputs” workflow:
 - For every operation, the user passes required inputs explicitly via `-var`:
   - tenant name / description / max GPUs
   - servers + shared + operation
-  - VPC peering name + target fabric + tenant fabric
+  - VPC peering name + fabric
 
 ## Docker (interactive shell, common `/workspace`)
 
@@ -47,6 +47,11 @@ Requires **Terraform >= 1.5** (for `check` blocks).
 export FABRIC_API_ENDPOINT="http://localhost:8787"
 export FABRIC_NAME="1SU-Fabric170619"
 
+# If you rebuilt the local provider binary, Terraform may reject it due to
+# outdated checksums in `.terraform.lock.hcl`. If that happens, delete the
+# lock file(s) in each example root and re-run init.
+
+rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
 terraform -chdir=examples/decoupled/01-tenant init
 terraform -chdir=examples/decoupled/01-tenant apply -auto-approve \
   -var="tenant_name=madhu01" \
@@ -109,6 +114,7 @@ If you instead mount the repo at **`/repo`** (`docker run ... -v "$PWD:/repo" ..
 ## 02 - Allocate GPUs (servers)
 
 ```bash
+rm -f examples/decoupled/02-servers/.terraform.lock.hcl
 terraform -chdir=examples/decoupled/02-servers init
 terraform -chdir=examples/decoupled/02-servers apply -auto-approve \
   -var="tenant_fabric=1SU-Fabric170619" \
@@ -121,11 +127,11 @@ terraform -chdir=examples/decoupled/02-servers apply -auto-approve \
 ## 03 - Create VPC peering
 
 ```bash
+rm -f examples/decoupled/03-vpcpeering/.terraform.lock.hcl
 terraform -chdir=examples/decoupled/03-vpcpeering init
 terraform -chdir=examples/decoupled/03-vpcpeering apply -auto-approve \
-  -var="tenant_fabric=1SU-Fabric170619" \
   -var="tenant_name=madhu01" \
-  -var="target_fabric=1SU-Fabric170619" \
+  -var="fabric=1SU-Fabric170619" \
   -var="vpcpeering_name=tf-vpcpeering-madhu01" \
   -var="delete_on_destroy=false"
 ```
@@ -133,8 +139,8 @@ terraform -chdir=examples/decoupled/03-vpcpeering apply -auto-approve \
 ## Notes
 
 - GPU deallocation is step 02 with `operation=DELETE` (or `REMOVE`):
-  - `terraform -chdir=examples/decoupled/02-servers apply -auto-approve ... -var="operation=DELETE"`
+  - `shared` is optional and ignored for DELETE; you can omit it:
+    `terraform -chdir=examples/decoupled/02-servers apply -auto-approve ... -var="operation=DELETE"`
 - Tenant deletion:
-  - Legacy: `terraform -chdir=examples/decoupled/01-tenant destroy -auto-approve -var="tenant_name=..."`
-  - Multi-tenant: use the same `terraform.tfvars` (or `-var-file=...`) you used for apply so all instances in `for_each` are destroyed, or remove keys from `tenants` and `apply` to drop individual tenants.
+  - `terraform -chdir=examples/decoupled/01-tenant destroy -auto-approve -var="tenant_name=..."`
 

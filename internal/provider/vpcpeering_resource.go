@@ -85,6 +85,9 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional: true,
 			},
+
+			// Kept for forward compatibility (async/webhooks), but current Create path
+			// works fine even when these are omitted (defaults are stored in state).
 			"prefer": schema.StringAttribute{
 				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
 				Optional:            true,
@@ -109,6 +112,7 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+
 			"vpcname": schema.StringAttribute{
 				Computed: true,
 			},
@@ -215,43 +219,8 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		PeerVpcName: storageVPC,
 	}
 
-	prefer := "respond-sync"
-	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
-		prefer = data.Prefer.ValueString()
-	}
-	webhooksEnabled := false
-	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
-		webhooksEnabled = data.WebhooksEnabled.ValueBool()
-	}
-	webhookURL := "http://localhost:8787/test/webhook-receiver"
-	if !data.WebhookURL.IsNull() && strings.TrimSpace(data.WebhookURL.ValueString()) != "" {
-		webhookURL = data.WebhookURL.ValueString()
-	}
-	var webhookEvents []string
-	if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
-		resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	}
-	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
-		if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
-			resp.Diagnostics.AddError(
-				"Missing webhook configuration",
-				"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
-			)
-			return
-		}
-	}
-
-	opts := &requestOptions{
-		Prefer:          prefer,
-		WebhooksEnabled: webhooksEnabled,
-		WebhookURL:      webhookURL,
-		WebhookEvents:   webhookEvents,
-	}
-
-	respBody, opID, err := r.client.CreateVpcPeeringWithResponseAndOptions(ctx, targetFab, reqBody, opts)
+	// Current backend: VPC peering does NOT integrate webhooks. Use sync API call.
+	respBody, err := r.client.CreateVpcPeeringWithResponse(ctx, targetFab, reqBody)
 	if err != nil {
 		if vpcPeeringErrMeansAlreadyExists(err) {
 			fmt.Fprintf(os.Stderr,
@@ -263,50 +232,73 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create vpcpeering: %s", err))
 			return
 		}
-	}
-
-	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
-		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
-			resp.Diagnostics.AddError("Async operation failed", err.Error())
-			return
+	} else {
+		fmt.Fprintf(os.Stderr,
+			"[fabricapi] VPC peering done: GET tenant + POST vpcpeering succeeded (name=%s target_fabric=%s vpcname=%s peervpcname=%s)\n",
+			reqBody.Name, targetFab, reqBody.VpcName, reqBody.PeerVpcName,
+		)
+		if respBody != "" {
+			fmt.Fprintf(os.Stderr, "[fabricapi] vpcpeering backend response: %s\n", respBody)
+			resp.Diagnostics.AddWarning("VPC peering created", respBody)
 		}
 	}
 
-	// Visible during terraform apply / pytest integration (provider stderr).
-	fmt.Fprintf(os.Stderr,
-		"[fabricapi] VPC peering done: GET tenant + POST vpcpeering succeeded (name=%s target_fabric=%s vpcname=%s peervpcname=%s)\n",
-		reqBody.Name, targetFab, reqBody.VpcName, reqBody.PeerVpcName,
-	)
-	if respBody != "" {
-		fmt.Fprintf(os.Stderr, "[fabricapi] vpcpeering backend response: %s\n", respBody)
-		// Warnings appear in normal `terraform apply` output; provider stderr is often easy to miss.
-		resp.Diagnostics.AddWarning("VPC peering created", respBody)
-	}
-
+	// Store computed/resolved fields in state.
 	data.VpcName = types.StringValue(reqBody.VpcName)
 	data.PeerVpcName = types.StringValue(reqBody.PeerVpcName)
 	data.ID = types.StringValue(data.Name.ValueString())
-	if strings.TrimSpace(opID) == "" {
-		data.OperationID = types.StringNull()
-	} else {
-		data.OperationID = types.StringValue(opID)
-	}
-
-	data.Prefer = types.StringValue(prefer)
-	data.WebhooksEnabled = types.BoolValue(webhooksEnabled)
-	data.WebhookURL = types.StringValue(webhookURL)
-	evList, diags := types.ListValueFrom(ctx, types.StringType, webhookEvents)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-	data.WebhookEvents = evList
 
 	// Persist effective fabrics so state matches API usage.
 	data.TargetFabric = types.StringValue(targetFab)
 	data.TenantFabric = types.StringValue(tenantFabric)
 
+	// Persist defaults for forward-compat fields so state is stable.
+	if data.Prefer.IsNull() || strings.TrimSpace(data.Prefer.ValueString()) == "" {
+		data.Prefer = types.StringValue("respond-sync")
+	}
+	if data.WebhooksEnabled.IsNull() || data.WebhooksEnabled.IsUnknown() {
+		data.WebhooksEnabled = types.BoolValue(false)
+	}
+	if data.WebhookURL.IsNull() || strings.TrimSpace(data.WebhookURL.ValueString()) == "" {
+		data.WebhookURL = types.StringValue("http://localhost:8787/test/webhook-receiver")
+	}
+	if data.WebhookEvents.IsNull() || data.WebhookEvents.IsUnknown() {
+		evList, diags := types.ListValueFrom(ctx, types.StringType, []string{})
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.WebhookEvents = evList
+	}
+	data.OperationID = types.StringNull()
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// vpcPeeringErrMeansAlreadyExists treats common duplicate / idempotent responses as success so
+// apply does not fail when peering (or same name) already exists on the API but Terraform is creating again.
+func vpcPeeringErrMeansAlreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "409") ||
+		strings.Contains(msg, "already exist") ||
+		strings.Contains(msg, "duplicate") ||
+		strings.Contains(msg, "conflict") ||
+		strings.Contains(msg, "identical") ||
+		strings.Contains(msg, "not modified")
+}
+
+func resolveVpcPeeringFabric(providerFabric string, override types.String) string {
+	if override.IsNull() || override.IsUnknown() {
+		return providerFabric
+	}
+	s := override.ValueString()
+	if s == "" {
+		return providerFabric
+	}
+	return s
 }
 
 func (r *VpcPeeringResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -315,7 +307,6 @@ func (r *VpcPeeringResource) Read(ctx context.Context, req resource.ReadRequest,
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
 	if r.client == nil {
 		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 		return
@@ -338,7 +329,7 @@ func (r *VpcPeeringResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 	if tenant == nil {
-		// GET tenant returns 404 — tenant was deleted. Drop peering from state so apply can create again.
+		// Tenant was deleted; drop peering from state so apply can create again.
 		fmt.Fprintf(os.Stderr,
 			"[fabricapi] vpcpeering Read: tenant %q not found in fabric %q (GET 404); removing fabricapi_vpcpeering from Terraform state\n",
 			tenantName, tenantFabric,
@@ -380,30 +371,4 @@ func (r *VpcPeeringResource) Delete(ctx context.Context, req resource.DeleteRequ
 	// Even though we don't delete the remote resource, remove it from Terraform state
 	// so that destroy completes cleanly and future plans are accurate.
 	resp.State.RemoveResource(ctx)
-}
-
-// vpcPeeringErrMeansAlreadyExists treats common duplicate / idempotent responses as success so
-// apply does not fail when peering (or same name) already exists on the API but Terraform is creating again.
-func vpcPeeringErrMeansAlreadyExists(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "409") ||
-		strings.Contains(msg, "already exist") ||
-		strings.Contains(msg, "duplicate") ||
-		strings.Contains(msg, "conflict") ||
-		strings.Contains(msg, "identical") ||
-		strings.Contains(msg, "not modified")
-}
-
-func resolveVpcPeeringFabric(providerFabric string, override types.String) string {
-	if override.IsNull() || override.IsUnknown() {
-		return providerFabric
-	}
-	s := override.ValueString()
-	if s == "" {
-		return providerFabric
-	}
-	return s
 }
