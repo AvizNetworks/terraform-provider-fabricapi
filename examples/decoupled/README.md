@@ -135,6 +135,6 @@ terraform -chdir=examples/decoupled/03-vpcpeering apply -auto-approve \
 - GPU deallocation is step 02 with `operation=DELETE` (or `REMOVE`):
   - `terraform -chdir=examples/decoupled/02-servers apply -auto-approve ... -var="operation=DELETE"`
 - Tenant deletion:
-  - Legacy: `terraform -chdir=examples/decoupled/01-tenant destroy -auto-approve -var="tenant_name=..." -var="tenant_description=..." -var="max_gpus_allowed=..."`
+  - Legacy: `terraform -chdir=examples/decoupled/01-tenant destroy -auto-approve -var="tenant_name=..."`
   - Multi-tenant: use the same `terraform.tfvars` (or `-var-file=...`) you used for apply so all instances in `for_each` are destroyed, or remove keys from `tenants` and `apply` to drop individual tenants.
 
