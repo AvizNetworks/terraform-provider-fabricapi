@@ -19,6 +19,11 @@ resource "fabricapi_tenant_servers" "this" {
   operation   = var.operation
   servers     = var.servers
   shared      = var.shared
+
+  prefer           = var.prefer
+  webhooks_enabled = var.webhooks_enabled
+  webhook_url      = var.webhook_url
+  webhook_events   = var.webhook_events
 }
 
 output "tenant_name" {
@@ -26,6 +31,6 @@ output "tenant_name" {
 }
 
 output "servers_operation_id" {
-  value = fabricapi_tenant_servers.this.id
+  value = fabricapi_tenant_servers.this.operation_id
 }
 

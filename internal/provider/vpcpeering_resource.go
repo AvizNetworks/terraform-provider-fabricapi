@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -33,6 +34,12 @@ type VpcPeeringResourceModel struct {
 	TenantFabric types.String `tfsdk:"tenant_fabric"`
 
 	DeleteOnDestroy types.Bool `tfsdk:"delete_on_destroy"`
+
+	Prefer          types.String `tfsdk:"prefer"`
+	WebhooksEnabled types.Bool   `tfsdk:"webhooks_enabled"`
+	WebhookURL      types.String `tfsdk:"webhook_url"`
+	WebhookEvents   types.List   `tfsdk:"webhook_events"`
+	OperationID     types.String `tfsdk:"operation_id"`
 
 	// Resolved from GET /fabrics and GET /{fabric}/tenants/{tenant}.
 	VpcName     types.String `tfsdk:"vpcname"`
@@ -73,6 +80,30 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 			},
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional: true,
+			},
+			"prefer": schema.StringAttribute{
+				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
+				Optional:            true,
+			},
+			"webhooks_enabled": schema.BoolAttribute{
+				MarkdownDescription: "When prefer is respond-async, set true to include enableWebhook, webhookUrl, webhookEvents in the request body. If unset, false is used.",
+				Optional:            true,
+			},
+			"webhook_url": schema.StringAttribute{
+				MarkdownDescription: "Webhook receiver URL (when prefer is respond-async and webhooks_enabled=true). If unset, defaults to http://localhost:8787/test/webhook-receiver in the client when needed.",
+				Optional:            true,
+			},
+			"webhook_events": schema.ListAttribute{
+				MarkdownDescription: "Webhook events (required when prefer is respond-async and webhooks_enabled=true).",
+				Optional:            true,
+				ElementType:         types.StringType,
+			},
+			"operation_id": schema.StringAttribute{
+				MarkdownDescription: "Async operation id when the API returns 202 (useful for GET /operations/{id} when webhooks_enabled=false).",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"vpcname": schema.StringAttribute{
 				Computed: true,
@@ -167,10 +198,53 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		PeerVpcName: storageVPC,
 	}
 
-	respBody, err := r.client.CreateVpcPeeringWithResponse(ctx, data.TargetFabric.ValueString(), reqBody)
+	prefer := "respond-sync"
+	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
+		prefer = data.Prefer.ValueString()
+	}
+	webhooksEnabled := false
+	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
+		webhooksEnabled = data.WebhooksEnabled.ValueBool()
+	}
+	webhookURL := "http://localhost:8787/test/webhook-receiver"
+	if !data.WebhookURL.IsNull() && strings.TrimSpace(data.WebhookURL.ValueString()) != "" {
+		webhookURL = data.WebhookURL.ValueString()
+	}
+	var webhookEvents []string
+	if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+		resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
+		if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
+			resp.Diagnostics.AddError(
+				"Missing webhook configuration",
+				"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
+			)
+			return
+		}
+	}
+
+	opts := &requestOptions{
+		Prefer:          prefer,
+		WebhooksEnabled: webhooksEnabled,
+		WebhookURL:      webhookURL,
+		WebhookEvents:   webhookEvents,
+	}
+
+	respBody, opID, err := r.client.CreateVpcPeeringWithResponseAndOptions(ctx, data.TargetFabric.ValueString(), reqBody, opts)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to create vpcpeering: %s", err))
 		return
+	}
+
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
+			resp.Diagnostics.AddError("Async operation failed", err.Error())
+			return
+		}
 	}
 
 	// Visible during terraform apply / pytest integration (provider stderr).
@@ -187,6 +261,21 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 	data.VpcName = types.StringValue(reqBody.VpcName)
 	data.PeerVpcName = types.StringValue(reqBody.PeerVpcName)
 	data.ID = types.StringValue(data.Name.ValueString())
+	if strings.TrimSpace(opID) == "" {
+		data.OperationID = types.StringNull()
+	} else {
+		data.OperationID = types.StringValue(opID)
+	}
+
+	data.Prefer = types.StringValue(prefer)
+	data.WebhooksEnabled = types.BoolValue(webhooksEnabled)
+	data.WebhookURL = types.StringValue(webhookURL)
+	evList, diags := types.ListValueFrom(ctx, types.StringType, webhookEvents)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.WebhookEvents = evList
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -227,5 +316,5 @@ func (r *VpcPeeringResource) Delete(ctx context.Context, req resource.DeleteRequ
 
 	// Even though we don't delete the remote resource, remove it from Terraform state
 	// so that destroy completes cleanly and future plans are accurate.
-	resp.Diagnostics.Append(resp.State.RemoveResource(ctx)...)
+	resp.State.RemoveResource(ctx)
 }

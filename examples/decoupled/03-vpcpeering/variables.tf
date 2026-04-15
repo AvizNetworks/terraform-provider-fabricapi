@@ -23,3 +23,27 @@ variable "delete_on_destroy" {
   type        = bool
 }
 
+variable "prefer" {
+  description = "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted."
+  type        = string
+  default     = "respond-sync"
+}
+
+variable "webhooks_enabled" {
+  description = "Enable webhook payload for async VPC peering create."
+  type        = bool
+  default     = false
+}
+
+variable "webhook_url" {
+  description = "Webhook receiver URL (used only when prefer is respond-async and webhooks_enabled=true)."
+  type        = string
+  default     = "http://localhost:8787/test/webhook-receiver"
+}
+
+variable "webhook_events" {
+  description = "Webhook events (used only when prefer is respond-async and webhooks_enabled=true)."
+  type        = list(string)
+  default     = []
+}
+

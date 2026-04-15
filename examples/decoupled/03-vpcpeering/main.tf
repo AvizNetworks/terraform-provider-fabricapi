@@ -20,6 +20,11 @@ resource "fabricapi_vpcpeering" "this" {
 
   tenant_fabric = var.tenant_fabric
   delete_on_destroy = var.delete_on_destroy
+
+  prefer           = var.prefer
+  webhooks_enabled = var.webhooks_enabled
+  webhook_url      = var.webhook_url
+  webhook_events   = var.webhook_events
 }
 
 output "tenant_name" {
@@ -28,5 +33,9 @@ output "tenant_name" {
 
 output "vpcpeering_id" {
   value = fabricapi_vpcpeering.this.id
+}
+
+output "vpcpeering_operation_id" {
+  value = fabricapi_vpcpeering.this.operation_id
 }
 

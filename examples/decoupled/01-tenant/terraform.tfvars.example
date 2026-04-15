@@ -1,0 +1,26 @@
+# Copy to terraform.tfvars (do not commit secrets).
+# Three tenants: sync, async (poll), async + webhooks — adjust URLs and credentials via env / provider.
+
+tenants = {
+  test_sync = {
+    description        = "Synchronous tenant (Prefer: respond-sync)"
+    max_gpus_allowed     = 8
+    prefer               = "respond-sync"
+    webhooks_enabled     = false
+  }
+  test_async = {
+    description        = "Async tenant, webhooks off — provider polls GET /operations/{id}"
+    max_gpus_allowed     = 8
+    prefer               = "respond-async"
+    webhooks_enabled     = false
+  }
+  test_async_webhook = {
+    description        = "Async tenant with webhooks (must match backend event names)"
+    max_gpus_allowed     = 8
+    prefer               = "respond-async"
+    webhooks_enabled     = true
+    # API rejects localhost/loopback (SSRF); use a URL reachable from the controller.
+    webhook_url          = "https://10.4.5.132:8089/test/webhook-receiver"
+    webhook_events       = ["tenant.create"]
+  }
+}

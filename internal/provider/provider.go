@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"os"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -18,8 +19,14 @@ type FabricAPIProvider struct {
 }
 
 type FabricAPIProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
-	Fabric   types.String `tfsdk:"fabric"`
+	Endpoint     types.String `tfsdk:"endpoint"`
+	Fabric       types.String `tfsdk:"fabric"`
+	AuthEndpoint types.String `tfsdk:"auth_endpoint"`
+	AccessToken  types.String `tfsdk:"access_token"`
+	RefreshToken types.String `tfsdk:"refresh_token"`
+	Username     types.String `tfsdk:"username"`
+	Password     types.String `tfsdk:"password"`
+	InsecureTLS  types.Bool   `tfsdk:"insecure_tls"`
 }
 
 func New(version string) func() provider.Provider {
@@ -46,6 +53,33 @@ func (p *FabricAPIProvider) Schema(ctx context.Context, req provider.SchemaReque
 				MarkdownDescription: "Fabric name",
 				Optional:            true,
 			},
+			"auth_endpoint": schema.StringAttribute{
+				MarkdownDescription: "Auth endpoint base URL (used for POST /login). If unset, defaults to endpoint.",
+				Optional:            true,
+			},
+			"access_token": schema.StringAttribute{
+				MarkdownDescription: "Bearer access token (JWT). If set, username/password login is skipped and this token is used for API Authorization.",
+				Optional:            true,
+				Sensitive:           true,
+			},
+			"refresh_token": schema.StringAttribute{
+				MarkdownDescription: "Refresh token used to obtain a new access token via POST /refresh when the access token expires.",
+				Optional:            true,
+				Sensitive:           true,
+			},
+			"username": schema.StringAttribute{
+				MarkdownDescription: "Username for login (POST /login). Used only if token is not set.",
+				Optional:            true,
+			},
+			"password": schema.StringAttribute{
+				MarkdownDescription: "Password for login (POST /login). Used only if token is not set.",
+				Optional:            true,
+				Sensitive:           true,
+			},
+			"insecure_tls": schema.BoolAttribute{
+				MarkdownDescription: "If true, skip TLS certificate verification (use only for dev/testing with self-signed certs).",
+				Optional:            true,
+			},
 		},
 	}
 }
@@ -61,6 +95,12 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 
 	endpoint := os.Getenv("FABRIC_API_ENDPOINT")
 	fabric := os.Getenv("FABRIC_NAME")
+	authEndpoint := os.Getenv("FABRIC_API_AUTH_ENDPOINT")
+	accessToken := os.Getenv("FABRIC_API_ACCESS_TOKEN")
+	refreshToken := os.Getenv("FABRIC_API_REFRESH_TOKEN")
+	username := os.Getenv("FABRIC_API_USERNAME")
+	password := os.Getenv("FABRIC_API_PASSWORD")
+	insecureTLS := os.Getenv("FABRICAPI_INSECURE_TLS")
 
 	if !data.Endpoint.IsNull() {
 		endpoint = data.Endpoint.ValueString()
@@ -70,17 +110,58 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 		fabric = data.Fabric.ValueString()
 	}
 
+	if !data.AuthEndpoint.IsNull() {
+		authEndpoint = data.AuthEndpoint.ValueString()
+	}
+	if !data.AccessToken.IsNull() {
+		accessToken = data.AccessToken.ValueString()
+	}
+	if !data.RefreshToken.IsNull() {
+		refreshToken = data.RefreshToken.ValueString()
+	}
+	if !data.Username.IsNull() {
+		username = data.Username.ValueString()
+	}
+	if !data.Password.IsNull() {
+		password = data.Password.ValueString()
+	}
+	if !data.InsecureTLS.IsNull() && !data.InsecureTLS.IsUnknown() {
+		if data.InsecureTLS.ValueBool() {
+			insecureTLS = "1"
+		} else {
+			insecureTLS = "0"
+		}
+	}
+
 	if endpoint == "" {
-		endpoint = "http://localhost:8787"
+		resp.Diagnostics.AddError(
+			"Missing endpoint",
+			"Set provider attribute `endpoint` or environment variable `FABRIC_API_ENDPOINT`.",
+		)
+		return
 	}
 
 	if fabric == "" {
-		fabric = "1SU-Fabric172202"
+		resp.Diagnostics.AddError(
+			"Missing fabric",
+			"Set provider attribute `fabric` or environment variable `FABRIC_NAME`.",
+		)
+		return
+	}
+
+	if authEndpoint == "" {
+		authEndpoint = endpoint
 	}
 
 	client := &APIClient{
-		Endpoint: endpoint,
-		Fabric:   fabric,
+		Endpoint:     endpoint,
+		Fabric:       fabric,
+		AuthEndpoint: authEndpoint,
+		Token:        strings.TrimSpace(accessToken),
+		RefreshToken: refreshToken,
+		Username:     username,
+		Password:     password,
+		InsecureTLS:  insecureTLS == "1" || insecureTLS == "true" || insecureTLS == "yes",
 	}
 
 	resp.DataSourceData = client
@@ -92,6 +173,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewTenantResource,
 		NewTenantServersResource,
 		NewVpcPeeringResource,
+		NewAuthLogoutResource,
 	}
 }
 
