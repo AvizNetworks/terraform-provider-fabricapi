@@ -35,6 +35,12 @@ type VpcPeeringResourceModel struct {
 
 	DeleteOnDestroy types.Bool `tfsdk:"delete_on_destroy"`
 
+	Prefer          types.String `tfsdk:"prefer"`
+	WebhooksEnabled types.Bool   `tfsdk:"webhooks_enabled"`
+	WebhookURL      types.String `tfsdk:"webhook_url"`
+	WebhookEvents   types.List   `tfsdk:"webhook_events"`
+	OperationID     types.String `tfsdk:"operation_id"`
+
 	// Resolved from GET /fabrics and GET /{fabric}/tenants/{tenant}.
 	VpcName     types.String `tfsdk:"vpcname"`
 	PeerVpcName types.String `tfsdk:"peervpcname"`
@@ -58,8 +64,8 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				},
 			},
 			"target_fabric": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
+				Optional:            true,
+				Computed:            true,
 				MarkdownDescription: "Fabric passed to the VPC peering API. Omit to use provider fabric (FABRIC_NAME / provider \"fabric\"); stored after apply.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -72,13 +78,41 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				},
 			},
 			"tenant_fabric": schema.StringAttribute{
-				Optional: true,
-				Computed: true,
+				Optional:            true,
+				Computed:            true,
 				MarkdownDescription: "Fabric for tenant lookup. Omit to use provider fabric; stored after apply.",
 			},
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional: true,
 			},
+
+			// Kept for forward compatibility (async/webhooks), but current Create path
+			// works fine even when these are omitted (defaults are stored in state).
+			"prefer": schema.StringAttribute{
+				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
+				Optional:            true,
+			},
+			"webhooks_enabled": schema.BoolAttribute{
+				MarkdownDescription: "When prefer is respond-async, set true to include enableWebhook, webhookUrl, webhookEvents in the request body. If unset, false is used.",
+				Optional:            true,
+			},
+			"webhook_url": schema.StringAttribute{
+				MarkdownDescription: "Webhook receiver URL (when prefer is respond-async and webhooks_enabled=true). If unset, defaults to http://localhost:8787/test/webhook-receiver in the client when needed.",
+				Optional:            true,
+			},
+			"webhook_events": schema.ListAttribute{
+				MarkdownDescription: "Webhook events (required when prefer is respond-async and webhooks_enabled=true).",
+				Optional:            true,
+				ElementType:         types.StringType,
+			},
+			"operation_id": schema.StringAttribute{
+				MarkdownDescription: "Async operation id when the API returns 202 (useful for GET /operations/{id} when webhooks_enabled=false).",
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+
 			"vpcname": schema.StringAttribute{
 				Computed: true,
 			},
@@ -185,6 +219,7 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		PeerVpcName: storageVPC,
 	}
 
+	// Current backend: VPC peering does NOT integrate webhooks. Use sync API call.
 	respBody, err := r.client.CreateVpcPeeringWithResponse(ctx, targetFab, reqBody)
 	if err != nil {
 		if vpcPeeringErrMeansAlreadyExists(err) {
@@ -198,7 +233,6 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 			return
 		}
 	} else {
-		// Visible during terraform apply / pytest integration (provider stderr).
 		fmt.Fprintf(os.Stderr,
 			"[fabricapi] VPC peering done: GET tenant + POST vpcpeering succeeded (name=%s target_fabric=%s vpcname=%s peervpcname=%s)\n",
 			reqBody.Name, targetFab, reqBody.VpcName, reqBody.PeerVpcName,
@@ -209,12 +243,34 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		}
 	}
 
+	// Store computed/resolved fields in state.
 	data.VpcName = types.StringValue(reqBody.VpcName)
 	data.PeerVpcName = types.StringValue(reqBody.PeerVpcName)
 	data.ID = types.StringValue(data.Name.ValueString())
-	// Persist effective fabrics (after ModifyPlan / resolve) so state matches API usage.
+
+	// Persist effective fabrics so state matches API usage.
 	data.TargetFabric = types.StringValue(targetFab)
 	data.TenantFabric = types.StringValue(tenantFabric)
+
+	// Persist defaults for forward-compat fields so state is stable.
+	if data.Prefer.IsNull() || strings.TrimSpace(data.Prefer.ValueString()) == "" {
+		data.Prefer = types.StringValue("respond-sync")
+	}
+	if data.WebhooksEnabled.IsNull() || data.WebhooksEnabled.IsUnknown() {
+		data.WebhooksEnabled = types.BoolValue(false)
+	}
+	if data.WebhookURL.IsNull() || strings.TrimSpace(data.WebhookURL.ValueString()) == "" {
+		data.WebhookURL = types.StringValue("http://localhost:8787/test/webhook-receiver")
+	}
+	if data.WebhookEvents.IsNull() || data.WebhookEvents.IsUnknown() {
+		evList, diags := types.ListValueFrom(ctx, types.StringType, []string{})
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.WebhookEvents = evList
+	}
+	data.OperationID = types.StringNull()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -273,7 +329,7 @@ func (r *VpcPeeringResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 	if tenant == nil {
-		// GET tenant returns 404 — tenant was deleted. Drop peering from state so apply can create again.
+		// Tenant was deleted; drop peering from state so apply can create again.
 		fmt.Fprintf(os.Stderr,
 			"[fabricapi] vpcpeering Read: tenant %q not found in fabric %q (GET 404); removing fabricapi_vpcpeering from Terraform state\n",
 			tenantName, tenantFabric,

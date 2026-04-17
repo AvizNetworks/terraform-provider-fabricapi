@@ -62,6 +62,28 @@ Place the files as follows:
 
 ## Testing the Provider
 
+### Docker: common workspace (`/workspace`)
+
+The image sets **`WORKDIR /workspace`**, which is a copy of the repo’s **`examples/`** tree. Start the shell **without** `-w .../01-tenant` so you land in that common root, then `cd` into the Terraform root you want:
+
+```bash
+docker run -it --rm \
+  -e FABRIC_API_ENDPOINT="https://10.4.5.132:8089" \
+  -e FABRIC_NAME="External" \
+  -e FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089" \
+  -e FABRIC_API_USERNAME="superadmin" \
+  -e FABRIC_API_PASSWORD='Admin@1234' \
+  -e FABRICAPI_INSECURE_TLS=1 \
+  terraform-fabricapi:latest
+# prompt shows ...:/workspace#
+
+cd decoupled/01-tenant   # or decoupled/02-servers, decoupled/03-vpcpeering, or stay in /workspace for examples/main.tf
+terraform init
+terraform apply -auto-approve -var='tenant_name=test1' -var='tenant_description=TF test' -var='max_gpus_allowed=8'
+```
+
+Use **`--network host`** only if the API is not reachable from the default Docker bridge (Linux).
+
 ### 1. Interactive Testing
 
 Start an interactive shell in the container:
@@ -149,6 +171,64 @@ export FABRIC_API_ENDPOINT="http://worker07.air.nvidia.com:29123"
 export FABRIC_NAME="fab"
 ```
 
+#### Authentication (JWT)
+
+The provider supports these authentication modes:
+
+1. **`access_token` (optional)**: supply a JWT access token yourself; the provider skips `POST /login` and sends it as `Authorization: Bearer …`. Combine with `refresh_token` if you still want automatic refresh on `401`.
+2. **`username` + `password`**: the provider calls `POST /login` to fetch `access_token` + `refresh_token` when no `access_token` is set.
+
+If an API call returns 401 (expired access token), the provider will automatically call `POST /refresh` (using the stored `refresh_token`) once and retry the original request. If the refresh token is expired/invalid, the run will fail and you must login again.
+
+To revoke the refresh token on the server (Spring-style `POST /api/auth/logout` with body `{"refresh_token":"..."}`), add a dedicated resource **after** your other resources (or apply it in a separate run so in-flight API calls are not affected):
+
+```hcl
+resource "fabricapi_auth_logout" "revoke" {}
+```
+
+The logout URL is `{auth_endpoint}/api/auth/logout` (same base as login; defaults to `endpoint` when `auth_endpoint` is unset).
+
+Configure via provider attributes:
+
+```hcl
+provider "fabricapi" {
+  endpoint      = "http://10.4.5.76:8787"
+  fabric        = "8407"
+
+  # Option A: bring your own access token
+  # access_token = var.fabricapi_access_token
+
+  # Option B: generate tokens via login
+  # auth_endpoint = "https://localhost:8089" # defaults to endpoint if unset
+  # username      = var.fabricapi_username
+  # password      = var.fabricapi_password
+}
+```
+
+Or via environment variables:
+
+```bash
+export FABRIC_API_ENDPOINT="http://10.4.5.76:8787"
+export FABRIC_NAME="8407"
+
+# Option A: access token you obtained out-of-band
+# export FABRIC_API_ACCESS_TOKEN="eyJ..."
+
+# Option B: login to fetch tokens
+export FABRIC_API_AUTH_ENDPOINT="https://localhost:8089"  # optional; defaults to FABRIC_API_ENDPOINT
+export FABRIC_API_USERNAME="superadmin"
+export FABRIC_API_PASSWORD="Admin@1234"
+
+# Optional: if you want to supply refresh token explicitly (otherwise it is learned from /login)
+export FABRIC_API_REFRESH_TOKEN="..."
+```
+
+If your auth endpoint requires TLS (common on `:8089`) and you are using a self-signed certificate for testing, set:
+
+```bash
+export FABRICAPI_INSECURE_TLS=1
+```
+
 ### Creating a Tenant
 
 ```hcl
@@ -156,6 +236,12 @@ resource "fabricapi_tenant" "example" {
   tenant_name      = "tenant2"
   description      = "Test tenant for GPU workloads"
   max_gpus_allowed = 32 # 8, 16, 24, or 32 — must be >= len(servers) * 8
+
+  # Optional async/webhook controls (default is synchronous)
+  # prefer           = "respond-sync"  # or "respond-async" (underscore forms also accepted)
+  # webhooks_enabled = false
+  # webhook_url      = "http://localhost:8787/test/webhook-receiver"
+  # webhook_events   = ["tenant.create"]
 }
 ```
 
@@ -180,6 +266,12 @@ resource "fabricapi_tenant_servers" "add_servers" {
   ]
 
   depends_on = [fabricapi_tenant.example]
+
+  # Optional async/webhook controls (default is synchronous)
+  # prefer           = "respond-sync"  # or "respond-async" (underscore forms also accepted)
+  # webhooks_enabled = false
+  # webhook_url      = "http://localhost:8787/test/webhook-receiver"
+  # webhook_events   = ["tenant.allocate", "tenant.deallocate"]
 }
 
 resource "fabricapi_tenant_servers" "remove_servers" {
@@ -190,6 +282,14 @@ resource "fabricapi_tenant_servers" "remove_servers" {
   ]
 }
 ```
+
+#### Async + webhooks behavior
+
+Applies to **`fabricapi_tenant`**, **`fabricapi_tenant_servers`**, and **`fabricapi_vpcpeering`** (same rules).
+
+- **Prefer (default)**: `prefer = "respond-sync"` (HTTP `Prefer: respond-sync`) — provider waits for completion. Values `respond_sync` / `respond_async` are still accepted and normalized to hyphen form for the API.
+- **Async without webhooks**: set `prefer = "respond-async"` and `webhooks_enabled = false`. The provider will poll `GET /operations/{operationId}` until the job completes, then continue.
+- **Async with webhooks**: set `prefer = "respond-async"` and `webhooks_enabled = true`. You must also set `webhook_url` and `webhook_events`. The provider will **not** poll the operation; the backend will notify your webhook receiver. The async job id is stored in the computed attribute `operation_id`.
 
 `fabricapi_tenant_servers` is PATCH-only and operates on an existing tenant.
 On updates, the provider compares current allocated servers vs desired `servers` and issues

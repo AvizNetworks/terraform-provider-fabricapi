@@ -3,6 +3,7 @@ package provider
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,18 +11,630 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
 type APIClient struct {
-	Endpoint string
-	Fabric   string
+	Endpoint     string
+	Fabric       string
+	AuthEndpoint string
+
+	// Auth: Username/Password are used to fetch an access token (and refresh token) via POST /login.
+	// Token is then used as an Authorization Bearer token for all requests.
+	// When RefreshToken is present, the client will refresh the access token once on 401 responses.
+	Token        string
+	RefreshToken string
+	Username string
+	Password string
+	InsecureTLS bool
+
+	mu             sync.Mutex
+	loginAttempted bool
+}
+
+type requestOptions struct {
+	Prefer          string   // respond-sync | respond-async (underscore forms normalized in preferHeaderValue)
+	WebhooksEnabled bool
+	WebhookURL      string
+	WebhookEvents   []string
+}
+
+type loginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (c *APIClient) authHeader() string {
+	tok := strings.TrimSpace(c.Token)
+	if tok == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(tok), "bearer ") {
+		return tok
+	}
+	return "Bearer " + tok
+}
+
+func (c *APIClient) refreshTokenOnce(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if strings.TrimSpace(c.RefreshToken) == "" {
+		return fmt.Errorf("access token expired and no refresh_token is available; login again")
+	}
+
+	p, err := c.refresh(ctx)
+	if err != nil {
+		// If refresh fails, surface a clear message.
+		return fmt.Errorf("access token expired and refresh failed: %w (login again)", err)
+	}
+
+	if p.AccessToken != "" {
+		c.Token = p.AccessToken
+	}
+	if p.RefreshToken != "" {
+		c.RefreshToken = p.RefreshToken
+	}
+	return nil
+}
+
+func (c *APIClient) doRequestRaw(
+	ctx context.Context,
+	method, url string,
+	body any,
+	timeout time.Duration,
+) ([]byte, int, error) {
+	return c.doRequestRawWithHeaders(ctx, method, url, body, timeout, nil)
+}
+
+func (c *APIClient) doRequestRawWithHeaders(
+	ctx context.Context,
+	method, url string,
+	body any,
+	timeout time.Duration,
+	extraHeaders map[string]string,
+) ([]byte, int, error) {
+	var payload []byte
+	var err error
+	if body != nil {
+		if b, ok := body.([]byte); ok {
+			payload = b
+		} else {
+			payload, err = json.Marshal(body)
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		var reader io.Reader
+		if payload != nil {
+			reader = bytes.NewBuffer(payload)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, method, url, reader)
+		if err != nil {
+			return nil, 0, err
+		}
+
+		if err := c.setCommonHeaders(ctx, req); err != nil {
+			return nil, 0, err
+		}
+		for k, v := range extraHeaders {
+			if strings.TrimSpace(k) == "" || strings.TrimSpace(v) == "" {
+				continue
+			}
+			req.Header.Set(k, v)
+		}
+
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		if c.InsecureTLS {
+			if transport.TLSClientConfig == nil {
+				transport.TLSClientConfig = &tls.Config{}
+			}
+			transport.TLSClientConfig.InsecureSkipVerify = true
+		}
+		client := &http.Client{Timeout: timeout, Transport: transport}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, 0, err
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+
+		// Retry once on auth failure by refreshing access token.
+		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			if err := c.refreshTokenOnce(ctx); err == nil {
+				continue
+			}
+		}
+
+		return respBody, resp.StatusCode, nil
+	}
+
+	return nil, 0, fmt.Errorf("request failed after auth refresh retry")
+}
+
+type tokenPair struct {
+	AccessToken  string
+	RefreshToken string
+	TokenType    string
+	ExpiresIn    int64
+}
+
+func extractTokenPairFromResponse(m map[string]any) (tokenPair, bool) {
+	getStr := func(key string) string {
+		if v, ok := m[key]; ok {
+			if s, ok := v.(string); ok {
+				return strings.TrimSpace(s)
+			}
+		}
+		return ""
+	}
+	getInt := func(key string) int64 {
+		if v, ok := m[key]; ok {
+			switch t := v.(type) {
+			case float64:
+				return int64(t)
+			case int64:
+				return t
+			case int:
+				return int64(t)
+			}
+		}
+		return 0
+	}
+
+	p := tokenPair{
+		AccessToken:  getStr("access_token"),
+		RefreshToken: getStr("refresh_token"),
+		TokenType:    getStr("token_type"),
+		ExpiresIn:    getInt("expires_in"),
+	}
+	if p.TokenType == "" {
+		p.TokenType = "Bearer"
+	}
+	if p.AccessToken != "" {
+		return p, true
+	}
+
+	for _, k := range []string{"data", "result", "auth"} {
+		if v, ok := m[k]; ok {
+			if mm, ok := v.(map[string]any); ok {
+				if p2, ok := extractTokenPairFromResponse(mm); ok {
+					return p2, true
+				}
+			}
+		}
+	}
+
+	// Backwards-compatible: accept "token" / "jwt" as access token.
+	for _, k := range []string{"token", "jwt", "accessToken", "id_token", "idToken"} {
+		if s := getStr(k); s != "" {
+			return tokenPair{AccessToken: s, TokenType: "Bearer"}, true
+		}
+	}
+
+	return tokenPair{}, false
+}
+
+func (c *APIClient) login(ctx context.Context, username, password string) (tokenPair, error) {
+	base := strings.TrimRight(c.AuthEndpoint, "/")
+	if base == "" {
+		base = strings.TrimRight(c.Endpoint, "/")
+	}
+	u := base + "/login"
+
+	payload := loginRequest{Username: username, Password: password}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return tokenPair{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewBuffer(b))
+	if err != nil {
+		return tokenPair{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if c.InsecureTLS {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+	client := &http.Client{Timeout: 2 * time.Minute, Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return tokenPair{}, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return tokenPair{}, fmt.Errorf("login failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		s := strings.TrimSpace(string(respBody))
+		if s != "" && !strings.HasPrefix(s, "{") {
+			return tokenPair{AccessToken: s, TokenType: "Bearer"}, nil
+		}
+		return tokenPair{}, fmt.Errorf("login response parse error: %w", err)
+	}
+
+	if p, ok := extractTokenPairFromResponse(m); ok {
+		return p, nil
+	}
+	return tokenPair{}, fmt.Errorf("login succeeded but no token field found in response")
+}
+
+type refreshRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+func (c *APIClient) refresh(ctx context.Context) (tokenPair, error) {
+	base := strings.TrimRight(c.AuthEndpoint, "/")
+	if base == "" {
+		base = strings.TrimRight(c.Endpoint, "/")
+	}
+	u := base + "/refresh"
+
+	payload := refreshRequest{RefreshToken: c.RefreshToken}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return tokenPair{}, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewBuffer(b))
+	if err != nil {
+		return tokenPair{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if c.InsecureTLS {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+	client := &http.Client{Timeout: 2 * time.Minute, Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return tokenPair{}, err
+	}
+	defer resp.Body.Close()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return tokenPair{}, fmt.Errorf("refresh failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		return tokenPair{}, fmt.Errorf("refresh response parse error: %w", err)
+	}
+	if p, ok := extractTokenPairFromResponse(m); ok {
+		return p, nil
+	}
+	return tokenPair{}, fmt.Errorf("refresh succeeded but no token field found in response")
+}
+
+// Logout calls POST {auth_endpoint}/api/auth/logout with JSON body {"refresh_token":"..."}.
+// It does not use ensureToken (so a refresh-only revoke works). We intentionally do NOT
+// send Authorization here because some backends reject logout when the access token is
+// expired/invalid, even though refresh-token revocation should still be allowed.
+// On success, in-memory Token and RefreshToken are cleared.
+func (c *APIClient) Logout(ctx context.Context, refreshTokenOverride string) error {
+	rt := strings.TrimSpace(refreshTokenOverride)
+	if rt == "" {
+		c.mu.Lock()
+		rt = strings.TrimSpace(c.RefreshToken)
+		c.mu.Unlock()
+	}
+	if rt == "" {
+		return fmt.Errorf("logout requires refresh_token (set provider refresh_token or fabricapi_auth_logout.refresh_token)")
+	}
+
+	base := strings.TrimRight(c.AuthEndpoint, "/")
+	if base == "" {
+		base = strings.TrimRight(c.Endpoint, "/")
+	}
+	u := base + "/api/auth/logout"
+
+	payload, err := json.Marshal(map[string]string{"refresh_token": rt})
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewBuffer(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if c.InsecureTLS {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{}
+		}
+		transport.TLSClientConfig.InsecureSkipVerify = true
+	}
+	client := &http.Client{Timeout: 2 * time.Minute, Transport: transport}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("logout failed (%d): %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+	}
+
+	c.mu.Lock()
+	c.Token = ""
+	c.RefreshToken = ""
+	c.loginAttempted = false
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *APIClient) ensureToken(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if strings.TrimSpace(c.Token) != "" {
+		return nil
+	}
+	if c.loginAttempted {
+		return fmt.Errorf("no token configured and login did not yield a token")
+	}
+	c.loginAttempted = true
+
+	if strings.TrimSpace(c.Username) == "" || strings.TrimSpace(c.Password) == "" {
+		return fmt.Errorf("missing auth: set access_token or username/password to authenticate")
+	}
+
+	p, err := c.login(ctx, c.Username, c.Password)
+	if err != nil {
+		return err
+	}
+	c.Token = p.AccessToken
+	if p.RefreshToken != "" {
+		c.RefreshToken = p.RefreshToken
+	}
+	return nil
+}
+
+func (c *APIClient) setCommonHeaders(ctx context.Context, req *http.Request) error {
+	req.Header.Set("Content-Type", "application/json")
+	// Always require login-based token acquisition for authenticated APIs.
+	if err := c.ensureToken(ctx); err != nil {
+		return err
+	}
+	if h := c.authHeader(); h != "" {
+		req.Header.Set("Authorization", h)
+	}
+	return nil
+}
+
+func preferHeaderValue(prefer string) string {
+	switch strings.ToLower(strings.TrimSpace(prefer)) {
+	case "", "respond_sync", "respond-sync":
+		return "respond-sync"
+	case "respond_async", "respond-async":
+		return "respond-async"
+	default:
+		// Be permissive: send whatever user set (best-effort).
+		return prefer
+	}
+}
+
+func maybeWebhookBody(opts *requestOptions) map[string]any {
+	if opts == nil {
+		return nil
+	}
+	if strings.EqualFold(preferHeaderValue(opts.Prefer), "respond-async") && opts.WebhooksEnabled {
+		out := map[string]any{
+			"enableWebhook": true,
+			"webhookUrl":    strings.TrimSpace(opts.WebhookURL),
+			"webhookEvents": opts.WebhookEvents,
+		}
+		return out
+	}
+	return nil
+}
+
+func extractOperationID(respBody []byte) (string, bool) {
+	s := strings.TrimSpace(string(respBody))
+	if s == "" {
+		return "", false
+	}
+
+	// Some backends may return plain text operation id.
+	if !strings.HasPrefix(s, "{") && !strings.HasPrefix(s, "[") {
+		return s, true
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		return "", false
+	}
+	getStr := func(key string) string {
+		if v, ok := m[key]; ok {
+			if ss, ok := v.(string); ok {
+				return strings.TrimSpace(ss)
+			}
+		}
+		return ""
+	}
+
+	for _, k := range []string{"operationId", "operation_id", "jobId", "job_id", "id"} {
+		if v := getStr(k); v != "" {
+			return v, true
+		}
+	}
+
+	// Nested common shapes: {"data":{"operationId":"..."}} etc.
+	for _, k := range []string{"data", "result", "operation"} {
+		if v, ok := m[k]; ok {
+			if mm, ok := v.(map[string]any); ok {
+				b, _ := json.Marshal(mm)
+				if id, ok := extractOperationID(b); ok {
+					return id, true
+				}
+			}
+		}
+	}
+
+	return "", false
+}
+
+type operationStatus struct {
+	Status  string
+	Done    *bool
+	Message string
+}
+
+func parseOperationStatus(respBody []byte) operationStatus {
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		// Unknown; keep polling unless caller decides otherwise.
+		return operationStatus{Status: ""}
+	}
+	getStr := func(key string) string {
+		if v, ok := m[key]; ok {
+			if ss, ok := v.(string); ok {
+				return strings.TrimSpace(ss)
+			}
+		}
+		return ""
+	}
+	getBoolPtr := func(key string) *bool {
+		if v, ok := m[key]; ok {
+			if bb, ok := v.(bool); ok {
+				return &bb
+			}
+		}
+		return nil
+	}
+
+	st := operationStatus{
+		Status:  getStr("status"),
+		Message: firstNonEmpty(getStr("message"), getStr("error"), getStr("detail")),
+		Done:    getBoolPtr("done"),
+	}
+	if st.Status == "" {
+		st.Status = getStr("state")
+	}
+	if st.Message == "" {
+		// some APIs wrap error as object
+		if v, ok := m["error"]; ok {
+			if mm, ok := v.(map[string]any); ok {
+				if s, ok := mm["message"].(string); ok {
+					st.Message = strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+	return st
+}
+
+func firstNonEmpty(ss ...string) string {
+	for _, s := range ss {
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func isOperationDone(st operationStatus) (done bool, success bool) {
+	if st.Done != nil {
+		if *st.Done {
+			// If done is true and status indicates failure, treat as failed.
+			s := strings.ToUpper(strings.TrimSpace(st.Status))
+			if s == "FAILED" || s == "ERROR" {
+				return true, false
+			}
+			return true, true
+		}
+		return false, false
+	}
+	s := strings.ToUpper(strings.TrimSpace(st.Status))
+	switch s {
+	case "PENDING", "RUNNING":
+		return false, false
+	case "DONE", "COMPLETED", "SUCCESS", "SUCCEEDED":
+		return true, true
+	case "FAILED", "ERROR":
+		return true, false
+	default:
+		return false, false
+	}
+}
+
+func (c *APIClient) GetOperation(ctx context.Context, operationID string) (operationStatus, error) {
+	u := fmt.Sprintf("%s/operations/%s", strings.TrimRight(c.Endpoint, "/"), url.PathEscape(operationID))
+	body, status, err := c.doRequestRaw(ctx, http.MethodGet, u, nil, 60*time.Minute)
+	if err != nil {
+		return operationStatus{}, err
+	}
+	if status < 200 || status >= 300 {
+		return operationStatus{}, fmt.Errorf("operation status returned %d: %s", status, strings.TrimSpace(string(body)))
+	}
+	return parseOperationStatus(body), nil
+}
+
+func (c *APIClient) WaitForOperationDone(ctx context.Context, operationID string, timeout time.Duration) error {
+	if strings.TrimSpace(operationID) == "" {
+		return fmt.Errorf("missing operation id")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout waiting for operation %s", operationID)
+		}
+		st, err := c.GetOperation(ctx, operationID)
+		if err != nil {
+			return err
+		}
+		if done, ok := isOperationDone(st); done {
+			if ok {
+				return nil
+			}
+			if st.Message != "" {
+				return fmt.Errorf("operation %s failed: %s", operationID, st.Message)
+			}
+			return fmt.Errorf("operation %s failed (status=%s)", operationID, st.Status)
+		}
+		time.Sleep(2 * time.Second)
+	}
 }
 
 type TenantRequest struct {
 	TenantName     string
 	Description    string
 	MaxGpusAllowed int
+}
+
+// tenantCreateAsyncFlatBody matches the async curl contract:
+// tenantName, description, maxGpusAllowed, shared (flat only).
+func tenantCreateAsyncFlatBody(t TenantRequest) map[string]any {
+	return map[string]any{
+		"tenantName":      t.TenantName,
+		"description":     t.Description,
+		"maxGpusAllowed":  t.MaxGpusAllowed,
+		"shared":          false,
+	}
 }
 
 // MarshalJSON encodes tenant create as the Fabric controller expects. Java/Jackson
@@ -36,12 +649,15 @@ func (t TenantRequest) MarshalJSON() ([]byte, error) {
 			Description    string `json:"description"`
 			MaxGPUsAllowed int    `json:"maxGPUsAllowed"`
 			MaxGpusAllowed int    `json:"maxGpusAllowed"`
+			Shared         bool   `json:"shared"`
 		} `json:"tenant,omitempty"`
 
 		TenantName     string `json:"tenantName"`
 		Description    string `json:"description"`
 		MaxGPUsAllowed int    `json:"maxGPUsAllowed"`
 		MaxGpusAllowed int    `json:"maxGpusAllowed"`
+		// Backend sample payloads include shared; async handlers may validate incorrectly if omitted.
+		Shared bool `json:"shared"`
 	}
 
 	nested := &struct {
@@ -49,11 +665,13 @@ func (t TenantRequest) MarshalJSON() ([]byte, error) {
 		Description    string `json:"description"`
 		MaxGPUsAllowed int    `json:"maxGPUsAllowed"`
 		MaxGpusAllowed int    `json:"maxGpusAllowed"`
+		Shared         bool   `json:"shared"`
 	}{
 		TenantName:     t.TenantName,
 		Description:    t.Description,
 		MaxGPUsAllowed: t.MaxGpusAllowed,
 		MaxGpusAllowed: t.MaxGpusAllowed,
+		Shared:         false,
 	}
 
 	return json.Marshal(body{
@@ -62,6 +680,7 @@ func (t TenantRequest) MarshalJSON() ([]byte, error) {
 		Description:    t.Description,
 		MaxGPUsAllowed: t.MaxGpusAllowed,
 		MaxGpusAllowed: t.MaxGpusAllowed,
+		Shared:         false,
 	})
 }
 
@@ -160,42 +779,93 @@ type VpcPeeringRequest struct {
 
 // CreateTenantWithFabric creates a tenant in the specified fabric
 func (c *APIClient) CreateTenantWithFabric(fabricName string, tenant TenantRequest) (*TenantResponse, error) {
-	url := fmt.Sprintf("%s/fabrics/%s/tenants", c.Endpoint, fabricName)
+	resp, _, err := c.CreateTenantWithFabricWithOptions(context.Background(), fabricName, tenant, nil)
+	return resp, err
+}
 
-	jsonData, err := json.Marshal(tenant)
+// CreateTenantWithFabricWithOptions supports Prefer + webhook fields for async mode.
+// Returns (tenantResponse, operationID, error). operationID is only set for async (202) responses.
+func (c *APIClient) CreateTenantWithFabricWithOptions(
+	ctx context.Context,
+	fabricName string,
+	tenant TenantRequest,
+	opts *requestOptions,
+) (*TenantResponse, string, error) {
+	u := fmt.Sprintf("%s/fabrics/%s/tenants", c.Endpoint, fabricName)
+
+	prefer := ""
+	if opts != nil {
+		prefer = opts.Prefer
+	}
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(prefer),
+	}
+
+	// Sync: use TenantRequest.MarshalJSON (nested+flat, dual maxGPU keys).
+	// Async: match the backend curl contract exactly (flat body only, single maxGpusAllowed),
+	// then optionally merge webhook fields when enabled.
+	var bodyAny any
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") {
+		m := tenantCreateAsyncFlatBody(tenant)
+		if wh := maybeWebhookBody(opts); wh != nil {
+			for k, v := range wh {
+				m[k] = v
+			}
+		}
+		bodyAny = m
+	} else {
+		bodyAny = tenant
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, bodyAny, 60*time.Minute, headers)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{
-		Timeout: 60 * time.Minute,
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	var apiResponse TenantAPIResponse
-	if err := json.Unmarshal(body, &apiResponse); err != nil {
+	if status == http.StatusAccepted {
+		if opID, ok := extractOperationID(respBody); ok {
+			return &TenantResponse{
+				TenantName:     tenant.TenantName,
+				Description:    tenant.Description,
+				MaxGpusAllowed: tenant.MaxGpusAllowed,
+			}, opID, nil
+		}
 		return &TenantResponse{
 			TenantName:     tenant.TenantName,
 			Description:    tenant.Description,
 			MaxGpusAllowed: tenant.MaxGpusAllowed,
-		}, nil
+		}, "", nil
+	}
+
+	if status != http.StatusOK && status != http.StatusCreated {
+		reqPreview := ""
+		if b, e := json.Marshal(bodyAny); e == nil {
+			reqPreview = string(b)
+			if len(reqPreview) > 2048 {
+				reqPreview = reqPreview[:2048] + "...(truncated)"
+			}
+		}
+		errMsg := fmt.Sprintf(
+			"API returned status %d: %s (tenant create request JSON: %s)",
+			status, string(respBody), reqPreview,
+		)
+		// Same JSON as respond-sync; only Prefer differs. Controllers that still return
+		// MAX_GPUS_INVALID need a server-side fix or tenant create must use respond-sync.
+		if status == http.StatusBadRequest &&
+			strings.Contains(string(respBody), "MAX_GPUS_INVALID") &&
+			strings.EqualFold(preferHeaderValue(prefer), "respond-async") {
+			errMsg += " Hint: If the same max_gpus_allowed works with prefer=respond-sync, the async tenant endpoint is rejecting a valid body—use respond-sync for tenant creation, or have the API team fix async validation."
+		}
+		return nil, "", fmt.Errorf("%s", errMsg)
+	}
+
+	var apiResponse TenantAPIResponse
+	if err := json.Unmarshal(respBody, &apiResponse); err != nil {
+		return &TenantResponse{
+			TenantName:     tenant.TenantName,
+			Description:    tenant.Description,
+			MaxGpusAllowed: tenant.MaxGpusAllowed,
+		}, "", nil
 	}
 
 	result := &TenantResponse{
@@ -203,7 +873,6 @@ func (c *APIClient) CreateTenantWithFabric(fabricName string, tenant TenantReque
 		Description:    apiResponse.Tenant.Description,
 		MaxGpusAllowed: apiResponse.Tenant.MaxGpusAllowed,
 	}
-
 	if result.TenantName == "" {
 		result.TenantName = tenant.TenantName
 	}
@@ -214,7 +883,7 @@ func (c *APIClient) CreateTenantWithFabric(fabricName string, tenant TenantReque
 		result.MaxGpusAllowed = tenant.MaxGpusAllowed
 	}
 
-	return result, nil
+	return result, "", nil
 }
 
 // CreateTenant uses the default fabric from the client
@@ -226,23 +895,17 @@ func (c *APIClient) CreateTenant(tenant TenantRequest) (*TenantResponse, error) 
 func (c *APIClient) GetTenantWithFabric(fabricName string, tenantName string) (*TenantResponse, error) {
 	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
 
-	client := &http.Client{
-		Timeout: 60 * time.Minute,
-	}
-	resp, err := client.Get(url)
+	body, status, err := c.doRequestRaw(context.Background(), http.MethodGet, url, nil, 60*time.Minute)
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	if status == http.StatusNotFound {
 		return nil, nil
 	}
 
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("API returned status %d: %s", status, string(body))
 	}
 
 	// Parse the nested API response
@@ -328,35 +991,12 @@ func (c *APIClient) doRequest(
 	body any,
 	out any,
 ) error {
-
-	var reader io.Reader
-	if body != nil {
-		data, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		reader = bytes.NewBuffer(data)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, url, reader)
+	respBody, status, err := c.doRequestRaw(ctx, method, url, body, 60*time.Minute)
 	if err != nil {
 		return err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 60 * time.Minute}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("API returned %d: %s", resp.StatusCode, string(respBody))
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("API returned %d: %s", status, string(respBody))
 	}
 
 	if out != nil {
@@ -373,28 +1013,48 @@ func (c *APIClient) doRequest(
 
 // DeleteTenantWithFabric deletes a tenant from the specified fabric
 func (c *APIClient) DeleteTenantWithFabric(fabricName string, tenantName string) error {
-	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
+	_, err := c.DeleteTenantWithFabricWithOptions(context.Background(), fabricName, tenantName, nil)
+	return err
+}
 
-	req, err := http.NewRequest("DELETE", url, nil)
+// DeleteTenantWithFabricWithOptions supports Prefer + webhook fields for async mode.
+// Returns operationID only for async (202) responses.
+func (c *APIClient) DeleteTenantWithFabricWithOptions(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	opts *requestOptions,
+) (string, error) {
+	u := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
+
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(func() string {
+			if opts == nil {
+				return ""
+			}
+			return opts.Prefer
+		}()),
+	}
+
+	var bodyAny any
+	if wh := maybeWebhookBody(opts); wh != nil {
+		bodyAny = wh
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodDelete, u, bodyAny, 60*time.Minute, headers)
 	if err != nil {
-		return err
+		return "", err
 	}
-
-	client := &http.Client{
-		Timeout: 60 * time.Minute,
+	if status == http.StatusAccepted {
+		if opID, ok := extractOperationID(respBody); ok {
+			return opID, nil
+		}
+		return "", nil
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
+	if status != http.StatusOK && status != http.StatusNoContent {
+		return "", fmt.Errorf("API returned status %d: %s", status, string(respBody))
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
+	return "", nil
 }
 
 // DeleteTenant uses the default fabric from the client
@@ -410,23 +1070,36 @@ func (c *APIClient) UpdateTenantServers(tenantName string, operation string, ser
 // UpdateTenantServersWithFabric PATCHes /fabrics/{fabric}/tenants/{tenant}.
 // ADD uses server objects with serverName + optional shared; DELETE uses a plain string array.
 func (c *APIClient) UpdateTenantServersWithFabric(fabricName string, tenantName string, operation string, servers []string, shared *bool) error {
+	_, err := c.UpdateTenantServersWithFabricWithOptions(context.Background(), fabricName, tenantName, operation, servers, shared, nil)
+	return err
+}
+
+// UpdateTenantServersWithFabricWithOptions supports Prefer + webhook fields for async mode.
+// Returns operationID only for async (202) responses.
+func (c *APIClient) UpdateTenantServersWithFabricWithOptions(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	operation string,
+	servers []string,
+	shared *bool,
+	opts *requestOptions,
+) (string, error) {
 	// Normalize operation: support both DELETE and REMOVE
 	if operation == "REMOVE" {
 		operation = "DELETE"
 	}
 
-	url := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
+	u := fmt.Sprintf("%s/fabrics/%s/tenants/%s", c.Endpoint, fabricName, tenantName)
 
-	var jsonData []byte
-	var err error
+	// Build base request map to easily append webhook fields.
+	reqMap := map[string]any{
+		"operation": operation,
+	}
 
 	if operation == "DELETE" {
 		// Deallocate: {"operation":"DELETE","servers":["host1","host2"]}
-		dealloc := TenantServersDeallocateRequest{
-			Operation: operation,
-			Servers:   servers,
-		}
-		jsonData, err = json.Marshal(dealloc)
+		reqMap["servers"] = servers
 	} else {
 		serverUpdates := make([]TenantServerUpdate, 0, len(servers))
 		for _, server := range servers {
@@ -435,39 +1108,41 @@ func (c *APIClient) UpdateTenantServersWithFabric(fabricName string, tenantName 
 				Shared:     shared,
 			})
 		}
-		request := TenantServersRequest{
-			Operation: operation,
-			Servers:   serverUpdates,
+		reqMap["servers"] = serverUpdates
+	}
+
+	if wh := maybeWebhookBody(opts); wh != nil {
+		for k, v := range wh {
+			reqMap[k] = v
 		}
-		jsonData, err = json.Marshal(request)
 	}
+
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(func() string {
+			if opts == nil {
+				return ""
+			}
+			return opts.Prefer
+		}()),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPatch, u, reqMap, 60*time.Minute, headers)
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	req, err := http.NewRequest("PATCH", url, bytes.NewBuffer(jsonData))
-	if err != nil {
-		return err
+	if status == http.StatusAccepted {
+		if opID, ok := extractOperationID(respBody); ok {
+			return opID, nil
+		}
+		return "", nil
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{
-		Timeout: 60 * time.Minute, // GPU allocation/deallocation can be slow on the real API
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	body, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("API returned status %d: %s", resp.StatusCode, string(body))
+	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusCreated {
+		return "", fmt.Errorf("API returned status %d: %s", status, string(respBody))
 	}
 
-	return nil
+	return "", nil
 }
 
 // ServersForDeallocation returns host names to send in a DELETE PATCH, using parsed
@@ -536,38 +1211,63 @@ func (c *APIClient) CreateVpcPeering(ctx context.Context, targetFabric string, r
 // Some backends return a human-readable success message in the response body; surfacing it makes
 // `terraform apply` logs match what users see with curl.
 func (c *APIClient) CreateVpcPeeringWithResponse(ctx context.Context, targetFabric string, reqBody VpcPeeringRequest) (string, error) {
+	bodyStr, _, err := c.CreateVpcPeeringWithResponseAndOptions(ctx, targetFabric, reqBody, nil)
+	return bodyStr, err
+}
+
+// CreateVpcPeeringWithResponseAndOptions creates VPC peering with Prefer + optional webhook fields.
+// Returns (response body text, operation id for 202 async, error).
+func (c *APIClient) CreateVpcPeeringWithResponseAndOptions(
+	ctx context.Context,
+	targetFabric string,
+	reqBody VpcPeeringRequest,
+	opts *requestOptions,
+) (string, string, error) {
 	u := fmt.Sprintf("%s/fabrics/%s/vpcpeering", strings.TrimRight(c.Endpoint, "/"), url.PathEscape(targetFabric))
 
-	data, err := json.Marshal(reqBody)
-	if err != nil {
-		return "", err
+	prefer := ""
+	if opts != nil {
+		prefer = opts.Prefer
+	}
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(prefer),
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewBuffer(data))
-	if err != nil {
-		return "", err
+	var bodyAny any = reqBody
+	if wh := maybeWebhookBody(opts); wh != nil {
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", "", err
+		}
+		var m map[string]any
+		if err := json.Unmarshal(b, &m); err != nil {
+			return "", "", err
+		}
+		for k, v := range wh {
+			m[k] = v
+		}
+		bodyAny = m
 	}
-	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 60 * time.Minute}
-	resp, err := client.Do(req)
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, bodyAny, 60*time.Minute, headers)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	defer resp.Body.Close()
-
-	respBody, _ := io.ReadAll(resp.Body)
 	bodyStr := strings.TrimSpace(string(respBody))
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Preserve body in the error for troubleshooting.
-		if bodyStr == "" {
-			return "", fmt.Errorf("API returned %d", resp.StatusCode)
-		}
-		return "", fmt.Errorf("API returned %d: %s", resp.StatusCode, bodyStr)
+	if status == http.StatusAccepted {
+		opID, _ := extractOperationID(respBody)
+		return bodyStr, opID, nil
 	}
 
-	return bodyStr, nil
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", "", fmt.Errorf("API returned %d", status)
+		}
+		return "", "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, "", nil
 }
 
 func (c *APIClient) WaitForTenantReady(

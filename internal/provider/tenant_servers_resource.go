@@ -28,6 +28,11 @@ type TenantServersResourceModel struct {
 	Operation  types.String `tfsdk:"operation"`
 	Servers    types.List   `tfsdk:"servers"`
 	Shared     types.Bool   `tfsdk:"shared"`
+	Prefer         types.String `tfsdk:"prefer"`
+	WebhooksEnabled types.Bool  `tfsdk:"webhooks_enabled"`
+	WebhookURL     types.String `tfsdk:"webhook_url"`
+	WebhookEvents  types.List   `tfsdk:"webhook_events"`
+	OperationID    types.String `tfsdk:"operation_id"`
 	ID         types.String `tfsdk:"id"`
 }
 
@@ -49,17 +54,38 @@ func (r *TenantServersResource) Schema(ctx context.Context, req resource.SchemaR
 				Optional:            true,
 			},
 			"operation": schema.StringAttribute{
-				MarkdownDescription: "Operation to perform: ADD, DELETE, or REMOVE (REMOVE is alias for DELETE)",
+				MarkdownDescription: "ADD, DELETE, or REMOVE (REMOVE aliases DELETE). On **create**, this is sent to the API with `servers`. On **update**, allocation changes are driven by diffing **servers** (desired set) against the live tenant from the API: servers removed from the list are deallocated (DELETE); new names are allocated (ADD). Changing only `operation` without changing `servers` may perform no API call if the set already matches the backend.",
 				Required:            true,
 			},
 			"servers": schema.ListAttribute{
-				MarkdownDescription: "List of server names",
+				MarkdownDescription: "Server names. On **update**, this is the **target** set: use `[]` to deallocate all, or omit servers you want removed (the provider DELETEs servers that exist on the tenant but are not in this list). It is not an imperative “only these servers for DELETE” list unless that matches the declarative diff.",
 				Required:            true,
 				ElementType:         types.StringType,
 			},
 			"shared": schema.BoolAttribute{
 				MarkdownDescription: "Optional shared GPU allocation flag. When set, value is sent in PATCH payload for every server.",
 				Optional:            true,
+			},
+			"prefer": schema.StringAttribute{
+				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
+				Optional:            true,
+			},
+			"webhooks_enabled": schema.BoolAttribute{
+				MarkdownDescription: "Enable webhook callback payload for async operations (Prefer: respond-async). If unset, false is used.",
+				Optional:            true,
+			},
+			"webhook_url": schema.StringAttribute{
+				MarkdownDescription: "Webhook receiver URL (when prefer is respond-async and webhooks_enabled=true). If unset, defaults to http://localhost:8787/test/webhook-receiver in the client when needed.",
+				Optional:            true,
+			},
+			"webhook_events": schema.ListAttribute{
+				MarkdownDescription: "Webhook event list (used only when prefer is respond-async and webhooks_enabled=true).",
+				Optional:            true,
+				ElementType:         types.StringType,
+			},
+			"operation_id": schema.StringAttribute{
+				MarkdownDescription: "Operation/job id for async requests (202). Used for polling when webhooks are disabled.",
+				Computed:            true,
 			},
 			"id": schema.StringAttribute{
 				Computed:            true,
@@ -161,31 +187,97 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 		shared = &v
 	}
 
-	err = r.client.UpdateTenantServersWithFabric(fabricName, tenantName, operation, servers, shared)
+	prefer := "respond-sync"
+	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
+		prefer = data.Prefer.ValueString()
+	}
+	webhooksEnabled := false
+	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
+		webhooksEnabled = data.WebhooksEnabled.ValueBool()
+	}
+	webhookURL := "http://localhost:8787/test/webhook-receiver"
+	if !data.WebhookURL.IsNull() && strings.TrimSpace(data.WebhookURL.ValueString()) != "" {
+		webhookURL = data.WebhookURL.ValueString()
+	}
+	var webhookEvents []string
+	if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+		resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
+		if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
+			resp.Diagnostics.AddError(
+				"Missing webhook configuration",
+				"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
+			)
+			return
+		}
+	}
+
+	opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, operation, servers, shared, &requestOptions{
+		Prefer:          prefer,
+		WebhooksEnabled: webhooksEnabled,
+		WebhookURL:      webhookURL,
+		WebhookEvents:   webhookEvents,
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update tenant servers: %s", err))
 		return
 	}
 
-	// Read back from API so state reflects the backend instead of only the request.
-	refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
-	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
-		return
-	}
-	if refreshed == nil {
-		resp.Diagnostics.AddError("Tenant not found", fmt.Sprintf("Tenant %q disappeared after update.", tenantName))
-		return
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
+			resp.Diagnostics.AddError("Async operation failed", err.Error())
+			return
+		}
 	}
 
-	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+	if !(strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled) {
+		// Read back from API so state reflects the backend instead of only the request.
+		refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
+			return
+		}
+		if refreshed == nil {
+			resp.Diagnostics.AddError("Tenant not found", fmt.Sprintf("Tenant %q disappeared after update.", tenantName))
+			return
+		}
+
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.Servers = serverList
+	} else {
+		// Async+webhook: do not block; keep planned servers list.
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizeServerList(servers))
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.Servers = serverList
+	}
+	data.Operation = types.StringValue(operation)
+	data.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
+	if strings.TrimSpace(opID) == "" {
+		data.OperationID = types.StringNull()
+	} else {
+		data.OperationID = types.StringValue(opID)
+	}
+
+	data.Prefer = types.StringValue(prefer)
+	data.WebhooksEnabled = types.BoolValue(webhooksEnabled)
+	data.WebhookURL = types.StringValue(webhookURL)
+	evList, diags := types.ListValueFrom(ctx, types.StringType, webhookEvents)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.Servers = serverList
-	data.Operation = types.StringValue(operation)
-	data.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
+	data.WebhookEvents = evList
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -225,10 +317,15 @@ func (r *TenantServersResource) Read(ctx context.Context, req resource.ReadReque
 
 func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var plan TenantServersResourceModel
+	var state TenantServersResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	var didAllocMutation bool
+	var mutationOpID string
 
 	fabricName := resolveFabricName(r.client.Fabric, plan.FabricName)
 	tenantName := plan.TenantName.ValueString()
@@ -257,10 +354,53 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 	toAdd, toDelete := diffServers(currentServers, desiredServers)
 
 	if len(toDelete) > 0 {
-		if err := r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "DELETE", toDelete, nil); err != nil {
+		prefer := "respond-sync"
+		if !plan.Prefer.IsNull() && strings.TrimSpace(plan.Prefer.ValueString()) != "" {
+			prefer = plan.Prefer.ValueString()
+		}
+		webhooksEnabled := false
+		if !plan.WebhooksEnabled.IsNull() && !plan.WebhooksEnabled.IsUnknown() {
+			webhooksEnabled = plan.WebhooksEnabled.ValueBool()
+		}
+		webhookURL := "http://localhost:8787/test/webhook-receiver"
+		if !plan.WebhookURL.IsNull() && strings.TrimSpace(plan.WebhookURL.ValueString()) != "" {
+			webhookURL = plan.WebhookURL.ValueString()
+		}
+		var webhookEvents []string
+		if !plan.WebhookEvents.IsNull() && !plan.WebhookEvents.IsUnknown() {
+			resp.Diagnostics.Append(plan.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
+			if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
+				resp.Diagnostics.AddError(
+					"Missing webhook configuration",
+					"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
+				)
+				return
+			}
+		}
+
+		opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toDelete, nil, &requestOptions{
+			Prefer:          prefer,
+			WebhooksEnabled: webhooksEnabled,
+			WebhookURL:      webhookURL,
+			WebhookEvents:   webhookEvents,
+		})
+		if err != nil {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to deallocate tenant servers: %s", err))
 			return
 		}
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+			if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
+				resp.Diagnostics.AddError("Async operation failed", err.Error())
+				return
+			}
+		}
+		didAllocMutation = true
+		mutationOpID = opID
 	}
 
 	if len(toAdd) > 0 {
@@ -292,29 +432,125 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			v := plan.Shared.ValueBool()
 			shared = &v
 		}
-		if err := r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "ADD", toAdd, shared); err != nil {
+		prefer := "respond-sync"
+		if !plan.Prefer.IsNull() && strings.TrimSpace(plan.Prefer.ValueString()) != "" {
+			prefer = plan.Prefer.ValueString()
+		}
+		webhooksEnabled := false
+		if !plan.WebhooksEnabled.IsNull() && !plan.WebhooksEnabled.IsUnknown() {
+			webhooksEnabled = plan.WebhooksEnabled.ValueBool()
+		}
+		webhookURL := "http://localhost:8787/test/webhook-receiver"
+		if !plan.WebhookURL.IsNull() && strings.TrimSpace(plan.WebhookURL.ValueString()) != "" {
+			webhookURL = plan.WebhookURL.ValueString()
+		}
+		var webhookEvents []string
+		if !plan.WebhookEvents.IsNull() && !plan.WebhookEvents.IsUnknown() {
+			resp.Diagnostics.Append(plan.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
+			if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
+				resp.Diagnostics.AddError(
+					"Missing webhook configuration",
+					"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
+				)
+				return
+			}
+		}
+
+		opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "ADD", toAdd, shared, &requestOptions{
+			Prefer:          prefer,
+			WebhooksEnabled: webhooksEnabled,
+			WebhookURL:      webhookURL,
+			WebhookEvents:   webhookEvents,
+		})
+		if err != nil {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to allocate tenant servers: %s", err))
 			return
 		}
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+			if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
+				resp.Diagnostics.AddError("Async operation failed", err.Error())
+				return
+			}
+		}
+		didAllocMutation = true
+		mutationOpID = opID
 	}
 
-	refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
-	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
-		return
+	// If async+webhook, do not block on backend updates; keep desired plan servers.
+	preferFinal := "respond-sync"
+	if !plan.Prefer.IsNull() && strings.TrimSpace(plan.Prefer.ValueString()) != "" {
+		preferFinal = plan.Prefer.ValueString()
 	}
-	if refreshed == nil {
-		resp.Diagnostics.AddError("Tenant not found", fmt.Sprintf("Tenant %q disappeared after update.", tenantName))
-		return
+	webhooksEnabledFinal := false
+	if !plan.WebhooksEnabled.IsNull() && !plan.WebhooksEnabled.IsUnknown() {
+		webhooksEnabledFinal = plan.WebhooksEnabled.ValueBool()
 	}
+	if !(strings.EqualFold(preferHeaderValue(preferFinal), "respond-async") && webhooksEnabledFinal) {
+		refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
+			return
+		}
+		if refreshed == nil {
+			resp.Diagnostics.AddError("Tenant not found", fmt.Sprintf("Tenant %q disappeared after update.", tenantName))
+			return
+		}
 
-	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.Servers = serverList
+	} else {
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, desiredServers)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.Servers = serverList
+	}
+	plan.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
+
+	webhookURLSt := "http://localhost:8787/test/webhook-receiver"
+	if !plan.WebhookURL.IsNull() && strings.TrimSpace(plan.WebhookURL.ValueString()) != "" {
+		webhookURLSt = plan.WebhookURL.ValueString()
+	}
+	var evFinal []string
+	if !plan.WebhookEvents.IsNull() && !plan.WebhookEvents.IsUnknown() {
+		resp.Diagnostics.Append(plan.WebhookEvents.ElementsAs(ctx, &evFinal, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	plan.Prefer = types.StringValue(preferFinal)
+	plan.WebhooksEnabled = types.BoolValue(webhooksEnabledFinal)
+	plan.WebhookURL = types.StringValue(webhookURLSt)
+	evList, diags := types.ListValueFrom(ctx, types.StringType, evFinal)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	plan.Servers = serverList
-	plan.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
+	plan.WebhookEvents = evList
+
+	if didAllocMutation {
+		if strings.TrimSpace(mutationOpID) != "" {
+			plan.OperationID = types.StringValue(strings.TrimSpace(mutationOpID))
+		} else {
+			plan.OperationID = types.StringNull()
+		}
+	} else if plan.OperationID.IsUnknown() {
+		if !state.OperationID.IsUnknown() {
+			plan.OperationID = state.OperationID
+		} else {
+			plan.OperationID = types.StringNull()
+		}
+	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
@@ -352,10 +588,50 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		return
 	}
 
-	err = r.client.UpdateTenantServersWithFabric(fabricName, tenantName, "DELETE", toFree, nil)
+	prefer := "respond-sync"
+	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
+		prefer = data.Prefer.ValueString()
+	}
+	webhooksEnabled := false
+	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
+		webhooksEnabled = data.WebhooksEnabled.ValueBool()
+	}
+	webhookURL := "http://localhost:8787/test/webhook-receiver"
+	if !data.WebhookURL.IsNull() && strings.TrimSpace(data.WebhookURL.ValueString()) != "" {
+		webhookURL = data.WebhookURL.ValueString()
+	}
+	var webhookEvents []string
+	if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+		resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
+		if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
+			resp.Diagnostics.AddError(
+				"Missing webhook configuration",
+				"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
+			)
+			return
+		}
+	}
+
+	opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toFree, nil, &requestOptions{
+		Prefer:          prefer,
+		WebhooksEnabled: webhooksEnabled,
+		WebhookURL:      webhookURL,
+		WebhookEvents:   webhookEvents,
+	})
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to deallocate tenant servers: %s", err))
 		return
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
+			resp.Diagnostics.AddError("Async operation failed", err.Error())
+			return
+		}
 	}
 
 	// Deallocation completed; clear resource from Terraform state so destroy completes cleanly.
