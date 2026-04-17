@@ -69,6 +69,9 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				MarkdownDescription: "Fabric passed to the VPC peering API. Omit to use provider fabric (FABRIC_NAME / provider \"fabric\"); stored after apply.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					// When omitted, keep prior resolved value so repeated applies don't
+					// force replacement due to unknown planned values.
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"name": schema.StringAttribute{
@@ -81,6 +84,9 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:            true,
 				Computed:            true,
 				MarkdownDescription: "Fabric for tenant lookup. Omit to use provider fabric; stored after apply.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional: true,
@@ -91,18 +97,28 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"prefer": schema.StringAttribute{
 				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"webhooks_enabled": schema.BoolAttribute{
 				MarkdownDescription: "When prefer is respond-async, set true to include enableWebhook, webhookUrl, webhookEvents in the request body. If unset, false is used.",
 				Optional:            true,
+				Computed:            true,
 			},
 			"webhook_url": schema.StringAttribute{
 				MarkdownDescription: "Webhook receiver URL (when prefer is respond-async and webhooks_enabled=true). If unset, defaults to http://localhost:8787/test/webhook-receiver in the client when needed.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"webhook_events": schema.ListAttribute{
 				MarkdownDescription: "Webhook events (required when prefer is respond-async and webhooks_enabled=true).",
 				Optional:            true,
+				Computed:            true,
 				ElementType:         types.StringType,
 			},
 			"operation_id": schema.StringAttribute{
@@ -121,6 +137,8 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					// When omitted, keep computed value from state to avoid replacement.
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"id": schema.StringAttribute{

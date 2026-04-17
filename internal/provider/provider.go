@@ -100,7 +100,8 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 	refreshToken := os.Getenv("FABRIC_API_REFRESH_TOKEN")
 	username := os.Getenv("FABRIC_API_USERNAME")
 	password := os.Getenv("FABRIC_API_PASSWORD")
-	insecureTLS := os.Getenv("FABRICAPI_INSECURE_TLS")
+	insecureTLSRaw := os.Getenv("FABRICAPI_INSECURE_TLS")
+	insecureTLS := parseBoolEnvDefaultFalse(insecureTLSRaw)
 
 	if !data.Endpoint.IsNull() {
 		endpoint = data.Endpoint.ValueString()
@@ -126,11 +127,7 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 		password = data.Password.ValueString()
 	}
 	if !data.InsecureTLS.IsNull() && !data.InsecureTLS.IsUnknown() {
-		if data.InsecureTLS.ValueBool() {
-			insecureTLS = "1"
-		} else {
-			insecureTLS = "0"
-		}
+		insecureTLS = data.InsecureTLS.ValueBool()
 	}
 
 	if endpoint == "" {
@@ -161,11 +158,22 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 		RefreshToken: refreshToken,
 		Username:     username,
 		Password:     password,
-		InsecureTLS:  insecureTLS == "1" || insecureTLS == "true" || insecureTLS == "yes",
+		InsecureTLS:  insecureTLS,
 	}
 
 	resp.DataSourceData = client
 	resp.ResourceData = client
+}
+
+func parseBoolEnvDefaultFalse(raw string) bool {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "1", "true", "t", "yes", "y", "on":
+		return true
+	default:
+		// Includes: "", "0", "false", "no", "off", and any unknown value.
+		return false
+	}
 }
 
 func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Resource {
