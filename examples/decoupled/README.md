@@ -16,21 +16,9 @@ These examples are designed for a strict “user supplies inputs” workflow:
   - servers + shared + operation
   - VPC peering name + fabric
 
-## Docker (interactive shell, common `/workspace`)
+## Local usage (no Docker)
 
-The **`terraform-fabricapi:latest`** image uses **`/workspace`** as the working directory (contents of repo `examples/`). Do **not** pass `-w /workspace/decoupled/01-tenant` unless you want to lock yourself to one module; instead:
-
-```bash
-docker run -it --rm \
-  -e FABRIC_API_ENDPOINT="https://10.4.5.132:8089" \
-  -e FABRIC_NAME="External" \
-  -e FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089" \
-  -e FABRIC_API_USERNAME="superadmin" \
-  -e FABRIC_API_PASSWORD='Admin@1234' \
-  -e FABRICAPI_INSECURE_TLS=1 \
-  terraform-fabricapi:latest
-cd decoupled/01-tenant && terraform init && terraform apply ...
-```
+Run Terraform directly from your host, using `-chdir=...` to select the example root you want.
 
 ## 01 - Create tenant(s)
 
@@ -100,16 +88,14 @@ terraform -chdir=examples/decoupled/01-tenant apply -auto-approve \
 
 Terraform will prompt at runtime if any **required** input variables are missing. To ensure a fully non-interactive run, always pass required values via `-var` (or use a `*.tfvars` file).
 
-Example **inside the default `terraform-fabricapi` image** (examples live under **`/workspace`**, not `/repo`):
+Example (non-interactive run):
 
 ```bash
-terraform -chdir=/workspace/decoupled/01-tenant apply -auto-approve \
+terraform -chdir=examples/decoupled/01-tenant apply -auto-approve \
   -var="tenant_name=terraform_test1" \
   -var="tenant_description=terraform_test tenant" \
   -var="max_gpus_allowed=8"
 ```
-
-If you instead mount the repo at **`/repo`** (`docker run ... -v "$PWD:/repo" ...`), use **`/repo/examples/decoupled/01-tenant`** with `-chdir`.
 
 ## 02 - Allocate GPUs (servers)
 

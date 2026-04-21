@@ -8,7 +8,6 @@
 #   export FABRICAPI_VPC_PEERING_FORCE_RECREATE=1
 #
 # Usage (from repo root):
-#   export DOCKER="sudo docker"    # if needed
 #   export FABRIC_API_ENDPOINT="http://10.4.5.76:8787"
 #   export FABRIC_NAME="8407"
 #   ./scripts/apply-vpc-peering.sh
@@ -19,8 +18,6 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DOCKER="${DOCKER:-docker}"
-IMAGE="${TERRAFORM_IMAGE:-terraform-fabricapi:latest}"
 CHDIR="${TF_CHDIR:-examples/decoupled/03-vpcpeering}"
 
 FABRIC_API_ENDPOINT="${FABRIC_API_ENDPOINT:-http://localhost:8787}"
@@ -32,13 +29,7 @@ VPC_PEERING_NAME="${VPC_PEERING_NAME:-tenant-003-storage-peering}"
 DELETE_ON_DESTROY="${DELETE_ON_DESTROY:-false}"
 
 run_tf() {
-  # shellcheck disable=SC2068
-  $DOCKER run --rm --network host \
-    -e FABRIC_API_ENDPOINT \
-    -e FABRIC_NAME \
-    -v "$REPO_ROOT:/repo" -w /repo \
-    --entrypoint terraform "$IMAGE" \
-    "$@"
+  (cd "${REPO_ROOT}" && FABRIC_API_ENDPOINT="${FABRIC_API_ENDPOINT}" FABRIC_NAME="${FABRIC_NAME}" terraform "$@")
 }
 
 echo "==> terraform init -upgrade ($CHDIR)"

@@ -5,34 +5,42 @@ set -e
 echo "=== Testing Terraform Provider ==="
 echo ""
 
+if ! command -v terraform >/dev/null 2>&1; then
+  echo "Error: terraform is required but was not found in PATH." >&2
+  exit 1
+fi
+
+# Ensure provider is installed for local runs
+./build.sh >/dev/null
+
 # Initialize Terraform
 echo "1. Initializing Terraform..."
-docker run -it --rm terraform-fabricapi:latest terraform init
+(cd examples && terraform init)
 echo ""
 
 # Validate configuration
 echo "2. Validating Terraform configuration..."
-docker run -it --rm terraform-fabricapi:latest terraform validate
+(cd examples && terraform validate)
 echo ""
 
 # Plan changes
 echo "3. Planning Terraform changes..."
-docker run -it --rm terraform-fabricapi:latest terraform plan
+(cd examples && terraform plan)
 echo ""
 
 # Apply changes (uncomment when ready to test against real API)
 # echo "4. Applying Terraform changes..."
-# docker run -it --rm terraform-fabricapi:latest terraform apply -auto-approve
+# (cd examples && terraform apply -auto-approve)
 # echo ""
 
 # Show state (uncomment after apply)
 # echo "5. Showing Terraform state..."
-# docker run -it --rm terraform-fabricapi:latest terraform show
+# (cd examples && terraform show)
 # echo ""
 
 # Destroy resources (uncomment when ready to cleanup)
 # echo "6. Destroying resources..."
-# docker run -it --rm terraform-fabricapi:latest terraform destroy -auto-approve
+# (cd examples && terraform destroy -auto-approve)
 # echo ""
 
 echo "=== Testing Complete ==="

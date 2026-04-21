@@ -18,7 +18,7 @@ terraform apply -var='api_endpoint=http://other:8787'
 
 ---
 
-## Commands (Docker, `examples/` as `/workspace`)
+## Commands (local, no Docker)
 
 ### First-time setup (create identity file)
 
@@ -32,19 +32,13 @@ cp examples/fabric.identity.auto.tfvars.example examples/fabric.identity.auto.tf
 ### After that — no `api_endpoint` / `fabric_name` / `tenant_name` on the command line
 
 ```bash
-docker run --rm --network host \
-  -v "$PWD/examples:/workspace" -w /workspace \
-  --entrypoint terraform terraform-fabricapi:latest \
-  apply -auto-approve
+terraform -chdir=examples apply -auto-approve
 ```
 
 ### Optional overrides only when you need them
 
 ```bash
-docker run --rm --network host \
-  -v "$PWD/examples:/workspace" -w /workspace \
-  --entrypoint terraform terraform-fabricapi:latest \
-  apply -auto-approve \
+terraform -chdir=examples apply -auto-approve \
   -var='api_endpoint=http://10.20.13.14:8787' \
   -var='fabric_name=OtherFabric' \
   -var='tenant_name=other-tenant'
@@ -53,10 +47,7 @@ docker run --rm --network host \
 ### Without `fabric.identity.auto.tfvars` (all identity on CLI)
 
 ```bash
-docker run --rm --network host \
-  -v "$PWD/examples:/workspace" -w /workspace \
-  --entrypoint terraform terraform-fabricapi:latest \
-  apply -auto-approve \
+terraform -chdir=examples apply -auto-approve \
   -var='api_endpoint=http://10.20.13.14:8787' \
   -var='fabric_name=Terraform_test01' \
   -var='tenant_name=test1' \
