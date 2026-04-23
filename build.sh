@@ -9,7 +9,12 @@ if ! command -v go >/dev/null 2>&1; then
   exit 1
 fi
 
-./scripts/install-local-provider.sh
+if ! command -v make >/dev/null 2>&1; then
+  echo "Error: make is required but was not found in PATH." >&2
+  exit 1
+fi
+
+make install
 
 echo ""
 echo "Build complete!"

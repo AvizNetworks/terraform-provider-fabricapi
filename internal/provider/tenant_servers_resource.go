@@ -13,6 +13,7 @@ import (
 )
 
 var _ resource.Resource = &TenantServersResource{}
+var _ resource.ResourceWithModifyPlan = &TenantServersResource{}
 
 func NewTenantServersResource() resource.Resource {
 	return &TenantServersResource{}
@@ -111,6 +112,41 @@ func (r *TenantServersResource) Configure(ctx context.Context, req resource.Conf
 	}
 
 	r.client = client
+}
+
+// ModifyPlan normalizes inputs that users commonly pass in imperative workflows.
+// In particular, it converts servers=[""] (or any list containing empty/whitespace-only
+// entries) into servers=[], so Terraform's plan matches the state produced after apply.
+func (r *TenantServersResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	// If there's no plan (e.g. destroy), nothing to do.
+	if req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan TenantServersResourceModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Normalize servers list (drop blanks, dedupe, sort).
+	if !plan.Servers.IsNull() && !plan.Servers.IsUnknown() {
+		var desired []string
+		resp.Diagnostics.Append(plan.Servers.ElementsAs(ctx, &desired, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+
+		norm := normalizeServerList(desired)
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, norm)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		plan.Servers = serverList
+	}
+
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {

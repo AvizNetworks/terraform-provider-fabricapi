@@ -24,6 +24,7 @@ terraform-provider-fabricapi/
 
 - Go (per `go.mod`)
 - Terraform (recommended: Terraform >= 1.5 for `check` blocks used in examples)
+- make
 - Access to the Fabric API endpoint
 
 ## Building the Provider
@@ -37,12 +38,18 @@ terraform-provider-fabricapi/
 
 3. **Build & install the provider locally:**
    ```bash
-   ./build.sh
+   make install
    ```
 
 This will:
 - Build the Go provider binary
 - Install the provider in the Terraform local plugin directory (`~/.terraform.d/plugins/...`)
+
+Alternatively (wrapper around `make install`):
+
+```bash
+./build.sh
+```
 
 ## Project Setup
 
