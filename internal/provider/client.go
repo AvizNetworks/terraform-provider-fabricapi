@@ -1135,6 +1135,7 @@ func (c *APIClient) UpdateTenantServersWithFabricWithOptions(
 	opts *requestOptions,
 ) (string, error) {
 	// Normalize operation: support both DELETE and REMOVE
+	operation = strings.ToUpper(strings.TrimSpace(operation))
 	if operation == "REMOVE" {
 		operation = "DELETE"
 	}

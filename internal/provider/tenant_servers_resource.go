@@ -169,6 +169,7 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 	}
 
 	operation := data.Operation.ValueString()
+	operation = strings.ToUpper(strings.TrimSpace(operation))
 	if operation != "ADD" && operation != "DELETE" && operation != "REMOVE" {
 		resp.Diagnostics.AddError(
 			"Invalid Operation",
@@ -451,6 +452,7 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 	currentServers := normalizedServersFromTenant(tenantInfo)
 
 	operation := plan.Operation.ValueString()
+	operation = strings.ToUpper(strings.TrimSpace(operation))
 	if operation == "REMOVE" {
 		operation = "DELETE"
 	}
@@ -651,23 +653,15 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 		plan.Servers = serverList
 	} else {
 		// Async+webhook: do not block.
-		// For ADD semantics, keep desired servers list.
-		// For DELETE semantics, keep existing state servers list (since desiredServers is a deletion list, not final allocation).
-		if operation == "DELETE" {
-			serverList, diags := types.ListValueFrom(ctx, types.StringType, desiredServers)
-			resp.Diagnostics.Append(diags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			plan.Servers = serverList
-		} else {
-			serverList, diags := types.ListValueFrom(ctx, types.StringType, desiredServers)
-			resp.Diagnostics.Append(diags...)
-			if resp.Diagnostics.HasError() {
-				return
-			}
-			plan.Servers = serverList
+		// Keep the requested list in state until the async operation completes.
+		// Note: when operation==DELETE, desiredServers is the deletion request list (imperative),
+		// not the post-delete allocation set.
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, desiredServers)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
 		}
+		plan.Servers = serverList
 	}
 	plan.ID = types.StringValue(stableTenantServersID(fabricName, tenantName))
 
