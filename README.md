@@ -16,14 +16,15 @@ terraform-provider-fabricapi/
 ├── examples/
 │   └── main.tf                      # Example Terraform configuration
 ├── go.mod                           # Go module definition
-├── Dockerfile                       # Docker build configuration
 ├── build.sh                         # Build script
 └── test.sh                          # Test script
 ```
 
 ## Prerequisites
 
-- Docker installed on your system
+- Go (per `go.mod`)
+- Terraform (recommended: Terraform >= 1.5 for `check` blocks used in examples)
+- make
 - Access to the Fabric API endpoint
 
 ## Building the Provider
@@ -35,15 +36,20 @@ terraform-provider-fabricapi/
    chmod +x build.sh test.sh
    ```
 
-3. **Build the Docker image:**
+3. **Build & install the provider locally:**
    ```bash
-   ./build.sh
+   make install
    ```
 
 This will:
 - Build the Go provider binary
-- Create a Docker image with Terraform and the custom provider
-- Install the provider in the correct plugin directory
+- Install the provider in the Terraform local plugin directory (`~/.terraform.d/plugins/...`)
+
+Alternatively (wrapper around `make install`):
+
+```bash
+./build.sh
+```
 
 ## Project Setup
 
@@ -58,70 +64,24 @@ Place the files as follows:
 - `main.go` → root directory
 - `provider.go`, `client.go`, `tenant_resource.go`, `tenant_servers_resource.go` → `internal/provider/`
 - `main.tf` → `examples/`
-- `go.mod`, `Dockerfile`, `build.sh`, `test.sh` → root directory
+- `go.mod`, `build.sh`, `test.sh` → root directory
 
 ## Testing the Provider
 
-### Docker: common workspace (`/workspace`)
+### Local: run examples directly
 
-The image sets **`WORKDIR /workspace`**, which is a copy of the repo’s **`examples/`** tree. Start the shell **without** `-w .../01-tenant` so you land in that common root, then `cd` into the Terraform root you want:
-
-```bash
-docker run -it --rm \
-  -e FABRIC_API_ENDPOINT="https://10.4.5.132:8089" \
-  -e FABRIC_NAME="External" \
-  -e FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089" \
-  -e FABRIC_API_USERNAME="superadmin" \
-  -e FABRIC_API_PASSWORD='Admin@1234' \
-  -e FABRICAPI_INSECURE_TLS=1 \
-  terraform-fabricapi:latest
-# prompt shows ...:/workspace#
-
-cd decoupled/01-tenant   # or decoupled/02-servers, decoupled/03-vpcpeering, or stay in /workspace for examples/main.tf
-terraform init
-terraform apply -auto-approve -var='tenant_name=test1' -var='tenant_description=TF test' -var='max_gpus_allowed=8'
-```
-
-Use **`--network host`** only if the API is not reachable from the default Docker bridge (Linux).
+After `./build.sh`, run Terraform in the example root(s) under `examples/`.
 
 ### 1. Interactive Testing
 
-Start an interactive shell in the container:
 ```bash
-docker run -it --rm terraform-fabricapi:latest 
-
+cd examples
 terraform init
-terraform apply \
+terraform apply -auto-approve \
   -var="tenant_name=test_tenant" \
   -var='max_gpus_allowed=32' \
   -var='servers=["hgx-su00-h00","hgx-su00-h01","hgx-su00-h02","hgx-su00-h03"]' \
-  -var='shared=true' \
-  -auto-approve
-```
-
-**** Following should not be referred to in this section ****
-```bash
-docker run -it --rm terraform-fabricapi:latest
-```
-
-Inside the container:
-
-```bash
-# Initialize Terraform
-terraform init
-
-# Validate the configuration
-terraform validate
-terraform apply -var="tenant_name=test_tenant" -auto-approve
-
-# Preview changes
-terraform plan
-
-# Apply changes (only when API is ready)
-terraform apply
-
-# Destroy resources
-terraform destroy
+  -var='shared=true'
 ```
 
 ### 2. Automated Testing
@@ -144,15 +104,7 @@ When you're ready to test against the actual API:
 
 ### 4. Mock API Testing
 
-If you want to test without the real API, create a simple mock server:
-
-```bash
-# Run a mock API server (in another terminal)
-docker run -p 29123:8080 mockserver/mockserver
-
-# Then run your tests
-docker run -it --rm --network host terraform-fabricapi:latest terraform plan
-```
+If you want to test without the real API, point `endpoint` to a mock server that implements the Fabric API endpoints used by the provider.
 
 ## Using the Provider
 
@@ -363,11 +315,7 @@ If you get "provider not found" errors:
 
 If you can't connect to the API:
 1. Verify the endpoint URL is correct
-2. Check network connectivity from Docker container
-3. Use `--network host` flag if running on Linux: 
-   ```bash
-   docker run -it --rm --network host terraform-fabricapi:latest
-   ```
+2. Check network connectivity from your host (e.g. `curl` the API health/login endpoint)
 
 ### Build Errors
 
@@ -397,13 +345,13 @@ Edit `examples/main.tf` to change:
 ## Development Workflow
 
 1. Make changes to Go source files
-2. Run `./build.sh` to rebuild the Docker image
+2. Run `./build.sh` to rebuild + reinstall the local provider
 3. Test with `./test.sh` or manually
 4. Iterate until desired behavior is achieved
 
 ## Notes
 
 - The provider is installed locally, not from a registry
-- State is stored locally in the container (use volumes to persist)
+- State is stored locally on your machine (Terraform state files under each example root)
 - The PATCH endpoint updates global tenant state, not specific tenant
 - For production use, consider publishing to Terraform Registry

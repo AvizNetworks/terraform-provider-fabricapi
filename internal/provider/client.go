@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -139,7 +142,7 @@ func (c *APIClient) doRequestRawWithHeaders(
 		client := &http.Client{Timeout: timeout, Transport: transport}
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, 0, err
+			return nil, 0, wrapConnectivityError(url, err)
 		}
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
@@ -155,6 +158,52 @@ func (c *APIClient) doRequestRawWithHeaders(
 	}
 
 	return nil, 0, fmt.Errorf("request failed after auth refresh retry")
+}
+
+func wrapConnectivityError(requestURL string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	// Timeout / context deadline
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf(
+			"unable to connect to Fabric API endpoint (%s). Please verify the endpoint URL and network connectivity (endpoint down, wrong IP/port, firewall/DNS). Original error: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	// net.Error timeouts
+	var nerr net.Error
+	if errors.As(err, &nerr) && nerr.Timeout() {
+		return fmt.Errorf(
+			"unable to connect to Fabric API endpoint (%s). Please verify the endpoint URL and network connectivity (endpoint down, wrong IP/port, firewall/DNS). Original error: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	// Connection refused / reset
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ECONNRESET) {
+		return fmt.Errorf(
+			"unable to connect to Fabric API endpoint (%s). Connection was refused/reset. Check the service is running and reachable (IP/port, firewall rules). Original error: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	// DNS / no such host
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return fmt.Errorf(
+			"unable to connect to Fabric API endpoint (%s). DNS lookup failed. Check the hostname and DNS/network settings. Original error: %w",
+			requestURL,
+			err,
+		)
+	}
+
+	return err
 }
 
 type tokenPair struct {
@@ -249,7 +298,7 @@ func (c *APIClient) login(ctx context.Context, username, password string) (token
 	client := &http.Client{Timeout: 2 * time.Minute, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
-		return tokenPair{}, err
+		return tokenPair{}, wrapConnectivityError(u, err)
 	}
 	defer resp.Body.Close()
 
@@ -306,7 +355,7 @@ func (c *APIClient) refresh(ctx context.Context) (tokenPair, error) {
 	client := &http.Client{Timeout: 2 * time.Minute, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
-		return tokenPair{}, err
+		return tokenPair{}, wrapConnectivityError(u, err)
 	}
 	defer resp.Body.Close()
 
@@ -368,7 +417,7 @@ func (c *APIClient) Logout(ctx context.Context, refreshTokenOverride string) err
 	client := &http.Client{Timeout: 2 * time.Minute, Transport: transport}
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		return wrapConnectivityError(u, err)
 	}
 	defer resp.Body.Close()
 	respBody, _ := io.ReadAll(resp.Body)
@@ -1086,6 +1135,7 @@ func (c *APIClient) UpdateTenantServersWithFabricWithOptions(
 	opts *requestOptions,
 ) (string, error) {
 	// Normalize operation: support both DELETE and REMOVE
+	operation = strings.ToUpper(strings.TrimSpace(operation))
 	if operation == "REMOVE" {
 		operation = "DELETE"
 	}

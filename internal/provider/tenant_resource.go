@@ -524,6 +524,16 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
+	// Note: On delete, Terraform removes the resource from state, so we cannot persist a new
+	// operation_id attribute the way we do on create/update. Emit it as a warning so users/QA
+	// can correlate async delete operations with backend /operations tracking.
+	if strings.TrimSpace(opID) != "" {
+		resp.Diagnostics.AddWarning(
+			"Tenant delete operation started",
+			fmt.Sprintf("Tenant %q delete accepted with operation_id=%s", tenantName, strings.TrimSpace(opID)),
+		)
+	}
+
 	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
 		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 			resp.Diagnostics.AddError("Async operation failed", err.Error())

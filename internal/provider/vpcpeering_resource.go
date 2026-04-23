@@ -69,6 +69,9 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				MarkdownDescription: "Fabric passed to the VPC peering API. Omit to use provider fabric (FABRIC_NAME / provider \"fabric\"); stored after apply.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					// When omitted, keep prior resolved value so repeated applies don't
+					// force replacement due to unknown planned values.
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"name": schema.StringAttribute{
@@ -81,6 +84,9 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Optional:            true,
 				Computed:            true,
 				MarkdownDescription: "Fabric for tenant lookup. Omit to use provider fabric; stored after apply.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"delete_on_destroy": schema.BoolAttribute{
 				Optional: true,
@@ -91,18 +97,28 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 			"prefer": schema.StringAttribute{
 				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"webhooks_enabled": schema.BoolAttribute{
 				MarkdownDescription: "When prefer is respond-async, set true to include enableWebhook, webhookUrl, webhookEvents in the request body. If unset, false is used.",
 				Optional:            true,
+				Computed:            true,
 			},
 			"webhook_url": schema.StringAttribute{
 				MarkdownDescription: "Webhook receiver URL (when prefer is respond-async and webhooks_enabled=true). If unset, defaults to http://localhost:8787/test/webhook-receiver in the client when needed.",
 				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"webhook_events": schema.ListAttribute{
 				MarkdownDescription: "Webhook events (required when prefer is respond-async and webhooks_enabled=true).",
 				Optional:            true,
+				Computed:            true,
 				ElementType:         types.StringType,
 			},
 			"operation_id": schema.StringAttribute{
@@ -121,6 +137,8 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				Computed: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+					// When omitted, keep computed value from state to avoid replacement.
+					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"id": schema.StringAttribute{
@@ -163,6 +181,41 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
+	// --- PRE-VALIDATION: FABRICS MUST EXIST ---
+	// QA expectation: fail fast with clear message if the fabric(s) don't exist,
+	// instead of timing out or failing later on missing tenant networking data.
+	fabrics, err := r.client.GetFabrics(ctx)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to list fabrics: %s", err))
+		return
+	}
+	fabricExists := func(name string) bool {
+		for _, f := range fabrics {
+			if f.FabricName == name {
+				return true
+			}
+		}
+		return false
+	}
+	missingFabrics := make([]string, 0, 2)
+	if !fabricExists(tenantFabric) {
+		missingFabrics = append(missingFabrics, tenantFabric)
+	}
+	if targetFab != tenantFabric && !fabricExists(targetFab) {
+		missingFabrics = append(missingFabrics, targetFab)
+	}
+	if len(missingFabrics) > 0 {
+		resp.Diagnostics.AddError(
+			"Fabric not found",
+			fmt.Sprintf(
+				"VPC peering cannot be created because the fabric(s) do not exist: %v. "+
+					"Verify FABRIC_NAME/provider fabric and the target_fabric/tenant_fabric values.",
+				missingFabrics,
+			),
+		)
+		return
+	}
+
 	// Peer/storage VPC name: use explicit Terraform value when set; otherwise resolve from
 	// GET /fabrics → defaultStorageName for target_fabric (real simulator), with legacy fallback.
 	storageVPC := "Storage-VPC"
@@ -179,25 +232,45 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		}
 	}
 
-	// Ensure tenant is visible (helps right after create / GPU alloc).
-	if err := r.client.WaitForTenantReady(ctx, tenantFabric, data.TenantName.ValueString(), 60*time.Second); err != nil {
-		resp.Diagnostics.AddError(
-			"Tenant not ready",
-			fmt.Sprintf("Tenant %q in fabric %q is not readable yet (needed for VPC peering): %s", data.TenantName.ValueString(), tenantFabric, err),
-		)
-		return
-	}
-
+	// --- PRE-VALIDATION: TENANT MUST EXIST ---
 	// Resolve tenant.vnets.name from GET /fabrics/{fabric}/tenants/{tenant}.
-	tenant, err := r.client.GetTenantWithFabric(tenantFabric, data.TenantName.ValueString())
+	tenantName := data.TenantName.ValueString()
+	tenant, err := r.client.GetTenantWithFabric(tenantFabric, tenantName)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to get tenant: %s", err))
 		return
 	}
+	if tenant == nil {
+		resp.Diagnostics.AddError(
+			"Tenant not found",
+			fmt.Sprintf("VPC peering cannot be created because tenant %q does not exist in fabric %q.", tenantName, tenantFabric),
+		)
+		return
+	}
+
+	// If tenant exists but networking isn't ready yet, wait briefly and retry once.
+	if tenant.VnetsName == "" {
+		if err := r.client.WaitForTenantReady(ctx, tenantFabric, tenantName, 60*time.Second); err != nil {
+			resp.Diagnostics.AddError(
+				"Tenant not ready",
+				fmt.Sprintf("Tenant %q exists in fabric %q but is not readable/ready yet (needed for VPC peering): %s", tenantName, tenantFabric, err),
+			)
+			return
+		}
+		tenant, err = r.client.GetTenantWithFabric(tenantFabric, tenantName)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to get tenant after readiness wait: %s", err))
+			return
+		}
+	}
 	if tenant == nil || tenant.VnetsName == "" {
 		resp.Diagnostics.AddError(
 			"Missing tenant vnets name",
-			fmt.Sprintf("Could not find tenant.vnets.name for tenant %s in fabric %s", data.TenantName.ValueString(), tenantFabric),
+			fmt.Sprintf(
+				"VPC peering cannot be created: required tenant VNet (tenant.vnets.name) not found for tenant %q in fabric %q. "+
+					"Ensure tenant networking/VNet provisioning is completed before creating VPC peering.",
+				tenantName, tenantFabric,
+			),
 		)
 		return
 	}
