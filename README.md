@@ -1,6 +1,15 @@
 # Terraform Provider for Fabric API
 
-This is a custom Terraform provider that manages Fabric API resources including tenants and tenant server assignments.
+Terraform provider (`fabricapi`) for managing Fabric API objects via standard Terraform workflows.
+
+- **Repo**: `https://github.com/AvizNetworks/terraform-provider-fabricapi`
+
+## Key Capabilities
+
+- **Tenant lifecycle management**: create, read, delete tenants
+- **GPU allocation**: assign/remove server resources (GPUs) to/from tenants
+- **VPC peering**: create VPC peering for tenants
+- **Asynchronous workflows**: supports `prefer=respond-async` with optional webhook payloads for non-blocking operations
 
 ## Project Structure
 
@@ -22,34 +31,203 @@ terraform-provider-fabricapi/
 
 ## Prerequisites
 
-- Go (per `go.mod`)
-- Terraform (recommended: Terraform >= 1.5 for `check` blocks used in examples)
-- make
-- Access to the Fabric API endpoint
+- **Local install**: Go (per `go.mod`), Terraform (recommended >= 1.5), `make`
+- **Docker workflow**: Docker
+- **Always**: network access to your Fabric API endpoint
 
-## Building the Provider
+## Terraform Provider fabricapi (local install)
 
-1. **Clone or create the project structure** with all the files provided above.
+### Overview
 
-2. **Make the build script executable:**
-   ```bash
-   chmod +x build.sh test.sh
-   ```
+This repository provides a custom Terraform provider, `fabricapi`, designed to manage objects within the Fabric API.
+It enables infrastructure-as-code management of Fabric resources using standard Terraform workflows.
 
-3. **Build & install the provider locally:**
-   ```bash
-   make install
-   ```
-
-This will:
-- Build the Go provider binary
-- Install the provider in the Terraform local plugin directory (`~/.terraform.d/plugins/...`)
-
-Alternatively (wrapper around `make install`):
+### Installation (build and local provider install)
 
 ```bash
-./build.sh
+git clone https://github.com/AvizNetworks/terraform-provider-fabricapi
+cd terraform-provider-fabricapi
+make install
 ```
+
+This places the provider binary into Terraform’s local plugin directory so `terraform init` can locate and use it.
+
+### Configure access (required)
+
+Access to the Fabric API is configured primarily via environment variables.
+
+#### Endpoint configuration
+
+- **`FABRIC_API_ENDPOINT`**: Fabric API base URL (example: `http://10.4.5.132:8787`)
+- **`FABRIC_NAME`**: Fabric name/ID (example: `Tenant`)
+
+#### Authentication (choose one option)
+
+- **Option A: access token**
+
+```bash
+export FABRIC_API_ACCESS_TOKEN="eyJ..."
+```
+
+- **Option B: username/password**
+
+```bash
+export FABRIC_API_USERNAME="superadmin"
+export FABRIC_API_PASSWORD="Admin@1234"
+# optional if auth is on a different base URL
+export FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089"
+```
+
+#### TLS configuration (if needed)
+
+If your auth endpoint uses a self-signed certificate (common for testing), you can disable TLS verification:
+
+```bash
+export FABRICAPI_INSECURE_TLS=1
+```
+
+### Examples layout (decoupled workflow)
+
+- **`examples/decoupled/01-tenant`**: tenant creation and deletion
+- **`examples/decoupled/02-servers`**: GPU allocation and deallocation
+- **`examples/decoupled/03-vpcpeering`**: VPC peering setup
+
+### One-time initialization (recommended)
+
+Run `terraform init` once for each example root so Terraform can locate the locally installed provider:
+
+```bash
+terraform -chdir=./examples/decoupled/01-tenant init -upgrade
+terraform -chdir=./examples/decoupled/02-servers init -upgrade
+terraform -chdir=./examples/decoupled/03-vpcpeering init -upgrade
+```
+
+### End-to-end commands (async + webhooks enabled)
+
+Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
+
+#### 1) Tenant creation
+
+```bash
+terraform -chdir=./examples/decoupled/01-tenant apply -auto-approve \
+  -state=states/e2e_async_tenant.tfstate \
+  -var="tenant_name=tenw01" \
+  -var="max_gpus_allowed=8" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var='webhook_url=http://10.4.5.132:8787/test/webhook-receiver' \
+  -var='webhook_events=["tenant.create"]'
+```
+
+#### 2) GPU allocation (ADD)
+
+```bash
+terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_async_servers.tfstate \
+  -var="tenant_fabric=Tenant" \
+  -var="tenant_name=tenw01" \
+  -var="operation=ADD" \
+  -var='servers=["hgx-su00-h00"]' \
+  -var="shared=false" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var='webhook_url=http://10.4.5.132:8787/test/webhook-receiver' \
+  -var='webhook_events=["tenant.allocate"]'
+```
+
+#### 3) VPC peering creation
+
+```bash
+terraform -chdir=./examples/decoupled/03-vpcpeering apply -auto-approve \
+  -state=states/e2e_vpc.tfstate \
+  -var="tenant_name=tenw01" \
+  -var="vpcpeering_name=tenw01-peer" \
+  -var="delete_on_destroy=false"
+```
+
+#### 4) GPU deallocation (DELETE)
+
+```bash
+terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_async_servers.tfstate \
+  -var="tenant_fabric=Tenant" \
+  -var="tenant_name=tenw01" \
+  -var="operation=DELETE" \
+  -var='servers=["hgx-su00-h00"]' \
+  -var="shared=false" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var='webhook_url=http://10.4.5.132:8787/test/webhook-receiver' \
+  -var='webhook_events=["tenant.deallocate"]'
+```
+
+Tip: to deallocate all servers for a tenant, use an empty list: `-var='servers=[]'` (avoid `servers=[""]`).
+
+#### 5) Tenant deletion
+
+```bash
+terraform -chdir=./examples/decoupled/01-tenant destroy -auto-approve \
+  -state=states/e2e_async_tenant.tfstate \
+  -var="tenant_name=tenw01" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var='webhook_url=http://10.4.5.132:8787/test/webhook-receiver' \
+  -var='webhook_events=["tenant.delete"]'
+```
+
+#### 6) VPC peering state removal (state-only)
+
+If you only want Terraform to forget the VPC peering object (leaving it in the API):
+
+```bash
+terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
+  -state=states/e2e_vpc.tfstate \
+  fabricapi_vpcpeering.this
+```
+
+### Troubleshooting
+
+- **Provider not found**: run `make install` again, then `terraform init -upgrade` in the relevant example folder
+- **Async + webhook errors**: when using `prefer=respond-async` and `webhooks_enabled=true`, you must set both `webhook_url` and `webhook_events`
+- **Connectivity failures**: verify `FABRIC_API_ENDPOINT` and ensure your machine can reach the endpoint
+
+## Terraform Provider fabricapi (Docker workflow)
+
+### Overview
+
+This workflow runs Terraform and the provider **inside a container**. It is independent of the local install workflow.
+
+### Build the Docker image
+
+```bash
+./docker-build.sh
+```
+
+### Run (repo-mounted “old workflow”)
+
+This is the same pattern you previously used (`/repo` mount). Run the container:
+
+```bash
+sudo docker run -it --rm --network host \
+  -e FABRIC_API_ENDPOINT="https://10.4.5.132:8089" \
+  -e FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089" \
+  -e FABRIC_NAME="Tenant" \
+  -e FABRIC_API_USERNAME="superadmin" \
+  -e FABRIC_API_PASSWORD='Admin@1234' \
+  -e FABRICAPI_INSECURE_TLS=1 \
+  -v "$PWD:/repo" \
+  terraform-fabricapi:latest
+```
+
+Inside the container, run the same init/apply/destroy commands, but with `/repo/...` paths:
+
+```bash
+terraform -chdir=/repo/examples/decoupled/01-tenant init -upgrade
+terraform -chdir=/repo/examples/decoupled/02-servers init -upgrade
+terraform -chdir=/repo/examples/decoupled/03-vpcpeering init -upgrade
+```
+
+E2E commands are identical to the local workflow above; only the paths change from `./examples/...` to `/repo/examples/...`.
 
 ## Project Setup
 
