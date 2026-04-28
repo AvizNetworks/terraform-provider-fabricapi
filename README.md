@@ -72,8 +72,8 @@ export FABRIC_API_ACCESS_TOKEN="eyJ..."
 - **Option B: username/password**
 
 ```bash
-export FABRIC_API_USERNAME="superadmin"
-export FABRIC_API_PASSWORD="Admin@1234"
+export FABRIC_API_USERNAME="YOUR_USERNAME"
+export FABRIC_API_PASSWORD="YOUR_PASSWORD"
 # optional if auth is on a different base URL
 export FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089"
 ```
@@ -208,16 +208,19 @@ This workflow runs Terraform and the provider **inside a container**. It is inde
 This is the same pattern you previously used (`/repo` mount). Run the container:
 
 ```bash
-sudo docker run -it --rm --network host \
+sudo docker run -it --rm \
   -e FABRIC_API_ENDPOINT="https://10.4.5.132:8089" \
   -e FABRIC_API_AUTH_ENDPOINT="https://10.4.5.132:8089" \
   -e FABRIC_NAME="Tenant" \
-  -e FABRIC_API_USERNAME="superadmin" \
-  -e FABRIC_API_PASSWORD='Admin@1234' \
-  -e FABRICAPI_INSECURE_TLS=1 \
+  -e FABRIC_API_USERNAME="YOUR_USERNAME" \
+  -e FABRIC_API_PASSWORD="YOUR_PASSWORD" \
   -v "$PWD:/repo" \
   terraform-fabricapi:latest
 ```
+
+If you are testing against a **local** endpoint and you truly need host networking, add `--network host`.
+
+If your auth endpoint uses a self-signed certificate (common in lab/testing), you can set `FABRICAPI_INSECURE_TLS=1` to disable TLS verification. Avoid using this in production.
 
 Inside the container, run the same init/apply/destroy commands, but with `/repo/...` paths:
 
@@ -346,8 +349,8 @@ export FABRIC_NAME="8407"
 
 # Option B: login to fetch tokens
 export FABRIC_API_AUTH_ENDPOINT="https://localhost:8089"  # optional; defaults to FABRIC_API_ENDPOINT
-export FABRIC_API_USERNAME="superadmin"
-export FABRIC_API_PASSWORD="Admin@1234"
+export FABRIC_API_USERNAME="YOUR_USERNAME"
+export FABRIC_API_PASSWORD="YOUR_PASSWORD"
 
 # Optional: if you want to supply refresh token explicitly (otherwise it is learned from /login)
 export FABRIC_API_REFRESH_TOKEN="..."
