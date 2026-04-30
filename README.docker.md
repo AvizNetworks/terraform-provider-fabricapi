@@ -46,15 +46,28 @@ Optional environment variables:
 This workflow mounts your working copy into the container at `/repo` and then opens an interactive shell inside the container.
 After the container starts, you will run the Terraform commands **inside that container shell**.
 
+Choose one authentication method and run **one** of the following commands.
+
+**Option A: access token (JWT)**
+
 ```bash
 docker run -it --rm \
   -e FABRIC_API_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
   -e FABRIC_API_AUTH_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
   -e FABRIC_NAME="YOUR_FABRIC_NAME" \
-  # Option A: access token (JWT)
-  # -e FABRIC_API_ACCESS_TOKEN="eyJ..." \
-  # -e FABRIC_API_REFRESH_TOKEN="..." \
-  # Option B: username/password
+  -e FABRIC_API_ACCESS_TOKEN="eyJ..." \
+  -e FABRIC_API_REFRESH_TOKEN="..." \
+  -v "$PWD:/repo" \
+  terraform-fabricapi:latest
+```
+
+**Option B: username/password**
+
+```bash
+docker run -it --rm \
+  -e FABRIC_API_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
+  -e FABRIC_API_AUTH_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
+  -e FABRIC_NAME="YOUR_FABRIC_NAME" \
   -e FABRIC_API_USERNAME="YOUR_USERNAME" \
   -e FABRIC_API_PASSWORD="YOUR_PASSWORD" \
   -v "$PWD:/repo" \
@@ -68,7 +81,7 @@ Before running Terraform, ensure the **Fabric** you set in `FABRIC_NAME` already
 ### Notes on networking and TLS (important)
 
 - **Avoid `--network host` by default.** Only use it for local-only test setups where the endpoint is reachable only via host networking.
-- If your auth endpoint uses a self-signed certificate (lab/testing), you can disable TLS verification by passing:
+- If your auth endpoint uses a self-signed certificate (lab/testing), add:
 
 ```bash
 -e FABRICAPI_INSECURE_TLS=1
@@ -95,24 +108,23 @@ docker run -it --rm \
 
 ## Sync vs Async vs Webhooks (important)
 
-- **Sync (default)**: set `prefer=respond-sync` (or omit `prefer`).  
-  - **No webhooks parameters are required**.
-- **Async without webhooks**: set `prefer=respond-async` and `webhooks_enabled=false`.  
-  - The provider will **poll** the backend operation until completion (using the returned operation id).
-- **Async with webhooks**: set `prefer=respond-async` and `webhooks_enabled=true`.  
-  - You must also set **both** `webhook_url` and `webhook_events`.
+- **Sync (default)**: set `prefer=respond-sync` (or omit `prefer`).
+  - **No webhook parameters are required**.
+- **Async (`respond-async`)**: **not supported in this release**.
+  - If you set `prefer=respond-async` (or `respond_async`), the provider will halt with: **"Async not supported"**.
+  - Use `respond-sync` for all operations until async is re-enabled in a future release.
 
 ### VPC peering webhook support
 
 VPC peering **does not currently integrate webhooks** in the backend. The resource schema keeps async/webhook fields for forward compatibility, but the create path uses a **sync** API call.
 
-### Webhook parameters and events reference
+### Webhook parameters and events reference (for future async support)
 
 These are the webhook-related parameters used in the example commands:
 
 - **`prefer`**:
   - **Optional** (default is `respond-sync`)
-  - Use `respond-async` only when you want async behavior
+  - When async is re-enabled in a future release, `respond-async` will request async behavior
 - **`webhooks_enabled`**:
   - **Optional** (default is `false`)
   - Only meaningful when `prefer=respond-async`
@@ -146,9 +158,9 @@ terraform -chdir=/repo/examples/decoupled/02-servers init -upgrade
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering init -upgrade
 ```
 
-## End-to-end commands (async + webhooks enabled) — inside the container
+## End-to-end commands (sync) — inside the container
 
-The following commands demonstrate a full end-to-end workflow using asynchronous operations (`prefer=respond-async`) and webhooks (`webhooks_enabled=true`) for status updates.
+The following commands demonstrate a full end-to-end workflow using **sync** operations (`respond-sync`).
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
 
@@ -158,30 +170,24 @@ mkdir -p /repo/examples/decoupled/01-tenant/states
 mkdir -p /repo/examples/decoupled/02-servers/states
 mkdir -p /repo/examples/decoupled/03-vpcpeering/states
 
-# 1) Tenant creation
+# 1) Tenant creation (sync)
 terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
-  -state=states/e2e_async_tenant.tfstate \
+  -state=states/e2e_tenant.tfstate \
   -var="tenant_name=tenw01" \
   -var="max_gpus_allowed=8" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.create"]'
+  -var="prefer=respond-sync"
 
-# 2) GPU allocation (ADD)
+# 2) GPU allocation (ADD) (sync)
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
-  -state=states/e2e_async_servers.tfstate \
-  -var="tenant_fabric=Tenant" \
+  -state=states/e2e_servers.tfstate \
+  -var="tenant_fabric=YOUR_FABRIC_NAME" \
   -var="tenant_name=tenw01" \
   -var="operation=ADD" \
   -var='servers=["hgx-su00-h00"]' \
   -var="shared=false" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.allocate"]'
+  -var="prefer=respond-sync"
 
-# 3) VPC peering creation
+# 3) VPC peering creation (sync)
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering apply -auto-approve \
   -state=states/e2e_vpc.tfstate \
   -var="tenant_name=tenw01" \
@@ -193,16 +199,13 @@ terraform -chdir=/repo/examples/decoupled/03-vpcpeering apply -auto-approve \
 
 ```bash
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
-  -state=states/e2e_async_servers.tfstate \
-  -var="tenant_fabric=Tenant" \
+  -state=states/e2e_servers.tfstate \
+  -var="tenant_fabric=YOUR_FABRIC_NAME" \
   -var="tenant_name=tenw01" \
   -var="operation=DELETE" \
   -var='servers=["hgx-su00-h00"]' \
   -var="shared=false" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.deallocate"]'
+  -var="prefer=respond-sync"
 ```
 
 Tip: To deallocate all servers for a tenant, use an empty list: `-var='servers=[]'`.
@@ -211,12 +214,9 @@ Tip: To deallocate all servers for a tenant, use an empty list: `-var='servers=[
 
 ```bash
 terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
-  -state=states/e2e_async_tenant.tfstate \
+  -state=states/e2e_tenant.tfstate \
   -var="tenant_name=tenw01" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.delete"]'
+  -var="prefer=respond-sync"
 ```
 
 ### VPC peering state removal (state-only)

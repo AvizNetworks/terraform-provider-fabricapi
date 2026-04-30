@@ -15,6 +15,14 @@ variable "tenants" {
   }))
 
   default = {}
+
+  validation {
+    condition = alltrue([
+      for _, t in var.tenants :
+      !contains(["respond-async", "respond_async"], lower(trimspace(try(t.prefer, "respond-sync"))))
+    ])
+    error_message = "Async is currently not supported. Use prefer=respond-sync (default) for all tenants."
+  }
 }
 
 # --- Legacy single-tenant (used only when var.tenants is empty) ---
@@ -37,9 +45,17 @@ variable "max_gpus_allowed" {
 }
 
 variable "prefer" {
-  description = "Legacy: Prefer header value (respond-sync default, or respond-async). Ignored when var.tenants is non-empty."
+  description = "Legacy: Prefer header value (respond-sync default). Async (respond-async) is disabled in the current release. Ignored when var.tenants is non-empty."
   type        = string
   default     = "respond-sync"
+
+  validation {
+    condition = !contains(
+      ["respond-async", "respond_async"],
+      lower(trimspace(var.prefer)),
+    )
+    error_message = "Async is currently not supported. Use prefer=respond-sync (default)."
+  }
 }
 
 variable "webhooks_enabled" {

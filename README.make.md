@@ -71,24 +71,23 @@ export FABRIC_API_AUTH_ENDPOINT="https://localhost:8089"
 
 ## Sync vs Async vs Webhooks (important)
 
-- **Sync (default)**: set `prefer=respond-sync` (or omit `prefer`).  
-  - **No webhooks parameters are required**.
-- **Async without webhooks**: set `prefer=respond-async` and `webhooks_enabled=false`.  
-  - The provider will **poll** the backend operation until completion (using the returned operation id).
-- **Async with webhooks**: set `prefer=respond-async` and `webhooks_enabled=true`.  
-  - You must also set **both** `webhook_url` and `webhook_events`.
+- **Sync (default)**: set `prefer=respond-sync` (or omit `prefer`).
+  - **No webhook parameters are required**.
+- **Async (`respond-async`)**: **not supported in this release**.
+  - If you set `prefer=respond-async` (or `respond_async`), the provider will halt with: **"Async not supported"**.
+  - Use `respond-sync` for all operations until async is re-enabled in a future release.
 
 ### VPC peering webhook support
 
 VPC peering **does not currently integrate webhooks** in the backend. The resource schema keeps async/webhook fields for forward compatibility, but the create path uses a **sync** API call.
 
-### Webhook parameters and events reference
+### Webhook parameters and events reference (for future async support)
 
 These are the webhook-related parameters used in the example commands:
 
 - **`prefer`**:
   - **Optional** (default is `respond-sync`)
-  - Use `respond-async` only when you want async behavior
+  - When async is re-enabled in a future release, `respond-async` will request async behavior
 - **`webhooks_enabled`**:
   - **Optional** (default is `false`)
   - Only meaningful when `prefer=respond-async`
@@ -130,9 +129,9 @@ terraform -chdir=examples/decoupled/02-servers init -upgrade
 terraform -chdir=examples/decoupled/03-vpcpeering init -upgrade
 ```
 
-## End-to-end commands (async + webhooks enabled)
+## End-to-end commands (sync)
 
-The following commands demonstrate a full end-to-end workflow using asynchronous operations (`prefer=respond-async`) and webhooks (`webhooks_enabled=true`) for status updates.
+The following commands demonstrate a full end-to-end workflow using **sync** operations (`respond-sync`).
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
 
@@ -143,40 +142,34 @@ export FABRIC_API_ENDPOINT="http://YOUR_FABRIC_API_HOST:8787"
 export FABRIC_NAME="YOUR_FABRIC_NAME"
 ```
 
-### 1) Tenant creation
+### 1) Tenant creation (sync)
 
 ```bash
 mkdir -p ./examples/decoupled/01-tenant/states
 
 terraform -chdir=./examples/decoupled/01-tenant apply -auto-approve \
-  -state=states/e2e_async_tenant.tfstate \
+  -state=states/e2e_tenant.tfstate \
   -var="tenant_name=tenw01" \
   -var="max_gpus_allowed=8" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.create"]'
+  -var="prefer=respond-sync"
 ```
 
-### 2) GPU allocation (ADD)
+### 2) GPU allocation (ADD) (sync)
 
 ```bash
 mkdir -p ./examples/decoupled/02-servers/states
 
 terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
-  -state=states/e2e_async_servers.tfstate \
+  -state=states/e2e_servers.tfstate \
   -var="tenant_fabric=YOUR_FABRIC_NAME" \
   -var="tenant_name=tenw01" \
   -var="operation=ADD" \
   -var='servers=["hgx-su00-h00"]' \
   -var="shared=false" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.allocate"]'
+  -var="prefer=respond-sync"
 ```
 
-### 3) VPC peering creation
+### 3) VPC peering creation (sync)
 
 ```bash
 mkdir -p ./examples/decoupled/03-vpcpeering/states
@@ -188,20 +181,17 @@ terraform -chdir=./examples/decoupled/03-vpcpeering apply -auto-approve \
   -var="delete_on_destroy=false"
 ```
 
-### 4) GPU deallocation (DELETE)
+### 4) GPU deallocation (DELETE) (sync)
 
 ```bash
 terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
-  -state=states/e2e_async_servers.tfstate \
+  -state=states/e2e_servers.tfstate \
   -var="tenant_fabric=YOUR_FABRIC_NAME" \
   -var="tenant_name=tenw01" \
   -var="operation=DELETE" \
   -var='servers=["hgx-su00-h00"]' \
   -var="shared=false" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.deallocate"]'
+  -var="prefer=respond-sync"
 ```
 
 Tip: To deallocate all servers for a tenant, use an empty list: `-var='servers=[]'`. Avoid using `servers=[""]`.
@@ -210,12 +200,9 @@ Tip: To deallocate all servers for a tenant, use an empty list: `-var='servers=[
 
 ```bash
 terraform -chdir=./examples/decoupled/01-tenant destroy -auto-approve \
-  -state=states/e2e_async_tenant.tfstate \
+  -state=states/e2e_tenant.tfstate \
   -var="tenant_name=tenw01" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var='webhook_url=http://YOUR_WEBHOOK_RECEIVER_HOST:8787/test/webhook-receiver' \
-  -var='webhook_events=["tenant.delete"]'
+  -var="prefer=respond-sync"
 ```
 
 ### 6) VPC peering state removal (state-only)
@@ -238,7 +225,7 @@ terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
 - **Provider not found**: re-run `make install`, then re-run `terraform init -upgrade` in the example root.
 - **Checksum mismatch / lock file issues**: delete `.terraform.lock.hcl` in that root and re-run `terraform init`.
 - **GOOS/GOARCH not detected**: ensure `go` is in `PATH` (`go version` should work).
-- **Async + webhook errors**: when using `prefer=respond-async` and `webhooks_enabled=true`, you must set both `webhook_url` and `webhook_events`.
+- **Async requested**: if you set `prefer=respond-async`, the provider will halt with **"Async not supported"** in this release. Use `respond-sync`.
 - **Connectivity failures**: verify `FABRIC_API_ENDPOINT` and ensure your machine can reach the endpoint.
 
 ### Lock file cleanup commands (only if you rebuilt the provider)

@@ -27,7 +27,9 @@ This root uses **`for_each`** so you can manage **multiple tenants in one state*
 - **Multi-tenant (recommended):** set `var.tenants` (see `terraform.tfvars.example`).
 - **Legacy single-tenant:** leave `tenants` empty and pass `tenant_name`, `tenant_description`, `max_gpus_allowed`, etc.
 
-Use **`respond-sync`** / **`respond-async`** in Terraform (HTTP `Prefer` header). Underscore forms are still accepted by the provider.
+Use **`respond-sync`** in Terraform (HTTP `Prefer` header).
+
+Note: **async (`respond-async`) is disabled in the current release**; attempts to use it will fail fast with an "Async not supported" error.
 
 Requires **Terraform >= 1.5** (for `check` blocks).
 
@@ -67,22 +69,9 @@ terraform -chdir=examples/decoupled/01-tenant state mv \
 
 Use the **actual** tenant name in place of `madhu01`.
 
-### Optional async + webhooks (tenant + servers + VPC peering)
+### Async + webhooks
 
-- Tenant create/delete, GPU allocation/deallocation, and VPC peering create support async execution via `prefer` and optional webhooks (same rules as the main README).
-
-Example: async + webhooks (tenant create, legacy vars):
-
-```bash
-terraform -chdir=examples/decoupled/01-tenant apply -auto-approve \
-  -var="tenant_name=madhu01" \
-  -var="tenant_description=TF Test tenant for GPU workloads" \
-  -var="max_gpus_allowed=32" \
-  -var="prefer=respond-async" \
-  -var="webhooks_enabled=true" \
-  -var="webhook_url=http://localhost:8787/test/webhook-receiver" \
-  -var='webhook_events=["tenant.create"]'
-```
+Async/webhooks inputs are retained in the example variables for forward compatibility, but **async is disabled in the current release**.
 
 ### Non-interactive runs (avoid runtime prompts)
 

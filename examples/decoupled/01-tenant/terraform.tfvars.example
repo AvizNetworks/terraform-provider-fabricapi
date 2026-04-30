@@ -11,13 +11,13 @@ tenants = {
   test_async = {
     description        = "Async tenant, webhooks off — provider polls GET /operations/{id}"
     max_gpus_allowed     = 8
-    prefer               = "respond-async"
+    prefer               = "respond-sync"
     webhooks_enabled     = false
   }
   test_async_webhook = {
     description        = "Async tenant with webhooks (must match backend event names)"
     max_gpus_allowed     = 8
-    prefer               = "respond-async"
+    prefer               = "respond-sync"
     webhooks_enabled     = true
     # API rejects localhost/loopback (SSRF); use a URL reachable from the controller.
     webhook_url          = "https://10.4.5.132:8089/test/webhook-receiver"

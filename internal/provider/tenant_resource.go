@@ -288,6 +288,13 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
 		prefer = data.Prefer.ValueString()
 	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+		resp.Diagnostics.AddError(
+			"Async not supported",
+			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+		)
+		return
+	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
 		webhooksEnabled = data.WebhooksEnabled.ValueBool()
@@ -483,6 +490,13 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	prefer := "respond-sync"
 	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
 		prefer = data.Prefer.ValueString()
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+		resp.Diagnostics.AddError(
+			"Async not supported",
+			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+		)
+		return
 	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {

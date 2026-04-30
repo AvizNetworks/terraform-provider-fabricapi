@@ -14,7 +14,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Tenants**: create/read/delete
 - **Tenant servers (GPUs)**: allocate/deallocate
 - **VPC peering**
-- **Async workflows**: `prefer=respond-async` with optional webhooks
+- **Async workflows**: present in schema for forward compatibility, but **disabled in the current release** (use `respond-sync`)
 
 ## Examples (copy/paste friendly)
 
