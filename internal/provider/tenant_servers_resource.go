@@ -281,6 +281,13 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
 		prefer = data.Prefer.ValueString()
 	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+		resp.Diagnostics.AddError(
+			"Async not supported",
+			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+		)
+		return
+	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
 		webhooksEnabled = data.WebhooksEnabled.ValueBool()
@@ -400,6 +407,14 @@ func (r *TenantServersResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 	if tenantInfo == nil {
+		resp.Diagnostics.AddWarning(
+			"Tenant not found; removing from state",
+			fmt.Sprintf(
+				"Tenant %q does not exist in fabric %q. Removing fabricapi_tenant_servers from Terraform state to avoid stale allocations.",
+				tenantName,
+				fabricName,
+			),
+		)
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -494,6 +509,13 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 		if !plan.Prefer.IsNull() && strings.TrimSpace(plan.Prefer.ValueString()) != "" {
 			prefer = plan.Prefer.ValueString()
 		}
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+			resp.Diagnostics.AddError(
+				"Async not supported",
+				"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+			)
+			return
+		}
 		webhooksEnabled := false
 		if !plan.WebhooksEnabled.IsNull() && !plan.WebhooksEnabled.IsUnknown() {
 			webhooksEnabled = plan.WebhooksEnabled.ValueBool()
@@ -571,6 +593,13 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 		prefer := "respond-sync"
 		if !plan.Prefer.IsNull() && strings.TrimSpace(plan.Prefer.ValueString()) != "" {
 			prefer = plan.Prefer.ValueString()
+		}
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+			resp.Diagnostics.AddError(
+				"Async not supported",
+				"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+			)
+			return
 		}
 		webhooksEnabled := false
 		if !plan.WebhooksEnabled.IsNull() && !plan.WebhooksEnabled.IsUnknown() {
@@ -739,6 +768,13 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 	prefer := "respond-sync"
 	if !data.Prefer.IsNull() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
 		prefer = data.Prefer.ValueString()
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+		resp.Diagnostics.AddError(
+			"Async not supported",
+			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+		)
+		return
 	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
