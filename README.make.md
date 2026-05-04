@@ -69,40 +69,6 @@ export FABRIC_API_PASSWORD="YOUR_PASSWORD"
 export FABRIC_API_AUTH_ENDPOINT="https://localhost:8089"
 ```
 
-## Sync vs Async vs Webhooks (important)
-
-- **Sync (default)**: set `prefer=respond-sync` (or omit `prefer`).
-  - **No webhook parameters are required**.
-- **Async (`respond-async`)**: **not supported in this release**.
-  - If you set `prefer=respond-async` (or `respond_async`), the provider will halt with: **"Async not supported"**.
-  - Use `respond-sync` for all operations until async is re-enabled in a future release.
-
-### VPC peering webhook support
-
-VPC peering **does not currently integrate webhooks** in the backend. The resource schema keeps async/webhook fields for forward compatibility, but the create path uses a **sync** API call.
-
-### Webhook parameters and events reference (for future async support)
-
-These are the webhook-related parameters used in the example commands:
-
-- **`prefer`**:
-  - **Optional** (default is `respond-sync`)
-  - When async is re-enabled in a future release, `respond-async` will request async behavior
-- **`webhooks_enabled`**:
-  - **Optional** (default is `false`)
-  - Only meaningful when `prefer=respond-async`
-- **`webhook_url`**:
-  - **Mandatory only when** `prefer=respond-async` **and** `webhooks_enabled=true`
-- **`webhook_events`**:
-  - **Mandatory only when** `prefer=respond-async` **and** `webhooks_enabled=true`
-
-Events used in the docs:
-
-- `tenant.create`
-- `tenant.allocate`
-- `tenant.deallocate`
-- `tenant.delete`
-
 ### TLS (only for lab/testing)
 
 If your auth endpoint uses a self-signed certificate, you can disable TLS verification:
@@ -129,9 +95,9 @@ terraform -chdir=examples/decoupled/02-servers init -upgrade
 terraform -chdir=examples/decoupled/03-vpcpeering init -upgrade
 ```
 
-## End-to-end commands (sync)
+## End-to-end commands
 
-The following commands demonstrate a full end-to-end workflow using **sync** operations (`respond-sync`).
+The following commands demonstrate a full end-to-end workflow. The examples use `prefer=respond-sync` (you can omit `prefer` where the defaults match).
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
 
@@ -142,11 +108,29 @@ export FABRIC_API_ENDPOINT="http://YOUR_FABRIC_API_HOST:8787"
 export FABRIC_NAME="YOUR_FABRIC_NAME"
 ```
 
-### 1) Tenant creation (sync)
+### State directories (one-time)
+
+Create the local `states/` directories under each decoupled example **before** the first `apply` that uses those paths.
+
+Run these `mkdir` commands only the **first** time you use the provider with these examples, or if those directories (or their parent trees) were removed. You do **not** need to run them again for routine applies or destroys.
 
 ```bash
 mkdir -p ./examples/decoupled/01-tenant/states
+mkdir -p ./examples/decoupled/02-servers/states
+mkdir -p ./examples/decoupled/03-vpcpeering/states
+```
 
+### How state files relate to tenants
+
+Each decoupled root uses **its own** `-state=...` file (`e2e_tenant.tfstate`, `e2e_servers.tfstate`, `e2e_vpc.tfstate`). They are not one combined Terraform state; together they describe **one tenant** if you keep names and paths aligned.
+
+- **Same tenant, same workflow**: reuse those state paths and always pass the **same** `tenant_name` (and the same `tenant_fabric` on server commands) as in the tenant step. The servers state tracks allocations **for that tenant**—changing `tenant_name` while keeping the old servers state file will confuse Terraform unless you intentionally reset or replace state.
+- **A different tenant or a clean slate**: use **new** state filenames under `states/` (or new directories). Do not reuse the same `e2e_*.tfstate` files for another tenant; Terraform would still think the old resources belong to this configuration.
+- **VPC peering again**: if Terraform must stop tracking an existing peer (for example you used `delete_on_destroy=false` or you need a fresh apply), run **VPC peering state removal** below so the next `apply` is not blocked by stale state. Skipping that when you expect a new peering run can lead to errors or the wrong object being tracked.
+
+### 1) Tenant creation
+
+```bash
 terraform -chdir=./examples/decoupled/01-tenant apply -auto-approve \
   -state=states/e2e_tenant.tfstate \
   -var="tenant_name=tenw01" \
@@ -154,11 +138,9 @@ terraform -chdir=./examples/decoupled/01-tenant apply -auto-approve \
   -var="prefer=respond-sync"
 ```
 
-### 2) GPU allocation (ADD) (sync)
+### 2) GPU allocation (ADD)
 
 ```bash
-mkdir -p ./examples/decoupled/02-servers/states
-
 terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
   -var="tenant_fabric=YOUR_FABRIC_NAME" \
@@ -169,11 +151,9 @@ terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
   -var="prefer=respond-sync"
 ```
 
-### 3) VPC peering creation (sync)
+### 3) VPC peering creation
 
 ```bash
-mkdir -p ./examples/decoupled/03-vpcpeering/states
-
 terraform -chdir=./examples/decoupled/03-vpcpeering apply -auto-approve \
   -state=states/e2e_vpc.tfstate \
   -var="tenant_name=tenw01" \
@@ -181,7 +161,7 @@ terraform -chdir=./examples/decoupled/03-vpcpeering apply -auto-approve \
   -var="delete_on_destroy=false"
 ```
 
-### 4) GPU deallocation (DELETE) (sync)
+### 4) GPU deallocation (DELETE)
 
 ```bash
 terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
@@ -207,7 +187,7 @@ terraform -chdir=./examples/decoupled/01-tenant destroy -auto-approve \
 
 ### 6) VPC peering state removal (state-only)
 
-Use this command to instruct Terraform to forget the VPC peering object in its state file, leaving the resource intact in the Fabric API.
+Use this command to instruct Terraform to forget the VPC peering object in its state file, leaving the resource intact in the Fabric API. You typically need this when you want Terraform to **manage peering again** from a clean slate (see **How state files relate to tenants** above).
 
 ```bash
 terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
@@ -225,7 +205,6 @@ terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
 - **Provider not found**: re-run `make install`, then re-run `terraform init -upgrade` in the example root.
 - **Checksum mismatch / lock file issues**: delete `.terraform.lock.hcl` in that root and re-run `terraform init`.
 - **GOOS/GOARCH not detected**: ensure `go` is in `PATH` (`go version` should work).
-- **Async requested**: if you set `prefer=respond-async`, the provider will halt with **"Async not supported"** in this release. Use `respond-sync`.
 - **Connectivity failures**: verify `FABRIC_API_ENDPOINT` and ensure your machine can reach the endpoint.
 
 ### Lock file cleanup commands (only if you rebuilt the provider)

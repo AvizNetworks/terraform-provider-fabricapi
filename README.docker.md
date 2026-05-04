@@ -106,40 +106,6 @@ docker run -it --rm \
   terraform-fabricapi:latest
 ```
 
-## Sync vs Async vs Webhooks (important)
-
-- **Sync (default)**: set `prefer=respond-sync` (or omit `prefer`).
-  - **No webhook parameters are required**.
-- **Async (`respond-async`)**: **not supported in this release**.
-  - If you set `prefer=respond-async` (or `respond_async`), the provider will halt with: **"Async not supported"**.
-  - Use `respond-sync` for all operations until async is re-enabled in a future release.
-
-### VPC peering webhook support
-
-VPC peering **does not currently integrate webhooks** in the backend. The resource schema keeps async/webhook fields for forward compatibility, but the create path uses a **sync** API call.
-
-### Webhook parameters and events reference (for future async support)
-
-These are the webhook-related parameters used in the example commands:
-
-- **`prefer`**:
-  - **Optional** (default is `respond-sync`)
-  - When async is re-enabled in a future release, `respond-async` will request async behavior
-- **`webhooks_enabled`**:
-  - **Optional** (default is `false`)
-  - Only meaningful when `prefer=respond-async`
-- **`webhook_url`**:
-  - **Mandatory only when** `prefer=respond-async` **and** `webhooks_enabled=true`
-- **`webhook_events`**:
-  - **Mandatory only when** `prefer=respond-async` **and** `webhooks_enabled=true`
-
-Events used in the docs:
-
-- `tenant.create`
-- `tenant.allocate`
-- `tenant.deallocate`
-- `tenant.delete`
-
 ## Run Terraform inside the container
 
 Inside the container, use `/repo/...` paths. If your prompt starts in `/workspace`, run:
@@ -158,26 +124,45 @@ terraform -chdir=/repo/examples/decoupled/02-servers init -upgrade
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering init -upgrade
 ```
 
-## End-to-end commands (sync) — inside the container
+## End-to-end commands — inside the container
 
-The following commands demonstrate a full end-to-end workflow using **sync** operations (`respond-sync`).
+The following sections walk through a full end-to-end workflow. The examples use `prefer=respond-sync` (you can omit `prefer` where the defaults match).
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
 
+### State directories (one-time)
+
+Create the local `states/` directories under each decoupled example **before** the first `apply` that uses those paths.
+
+Run these `mkdir` commands only the **first** time you use the provider with these examples, or if those directories (or their parent trees) were removed. You do **not** need to run them again for routine applies or destroys.
+
 ```bash
-# 0) Create local state directories once (per root)
 mkdir -p /repo/examples/decoupled/01-tenant/states
 mkdir -p /repo/examples/decoupled/02-servers/states
 mkdir -p /repo/examples/decoupled/03-vpcpeering/states
+```
 
-# 1) Tenant creation (sync)
+### How state files relate to tenants
+
+Each decoupled root uses **its own** `-state=...` file (`e2e_tenant.tfstate`, `e2e_servers.tfstate`, `e2e_vpc.tfstate`). They are not one combined Terraform state; together they describe **one tenant** if you keep names and paths aligned.
+
+- **Same tenant, same workflow**: reuse those state paths and always pass the **same** `tenant_name` (and the same `tenant_fabric` on server commands) as in the tenant step. The servers state tracks allocations **for that tenant**—changing `tenant_name` while keeping the old servers state file will confuse Terraform unless you intentionally reset or replace state.
+- **A different tenant or a clean slate**: use **new** state filenames under `states/` (or new directories). Do not reuse the same `e2e_*.tfstate` files for another tenant; Terraform would still think the old resources belong to this configuration.
+- **VPC peering again**: if Terraform must stop tracking an existing peer (for example you used `delete_on_destroy=false` or you need a fresh apply), run **VPC peering state removal** below so the next `apply` is not blocked by stale state. Skipping that when you expect a new peering run can lead to errors or the wrong object being tracked.
+
+### Tenant creation
+
+```bash
 terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
   -state=states/e2e_tenant.tfstate \
   -var="tenant_name=tenw01" \
   -var="max_gpus_allowed=8" \
   -var="prefer=respond-sync"
+```
 
-# 2) GPU allocation (ADD) (sync)
+### GPU allocation (ADD)
+
+```bash
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
   -var="tenant_fabric=YOUR_FABRIC_NAME" \
@@ -186,8 +171,11 @@ terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -var='servers=["hgx-su00-h00"]' \
   -var="shared=false" \
   -var="prefer=respond-sync"
+```
 
-# 3) VPC peering creation (sync)
+### VPC peering creation
+
+```bash
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering apply -auto-approve \
   -state=states/e2e_vpc.tfstate \
   -var="tenant_name=tenw01" \
@@ -220,6 +208,8 @@ terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
 ```
 
 ### VPC peering state removal (state-only)
+
+Use this when Terraform must **drop** the peering from state while Fabric still has the peer—often before a **new** peering `apply` with the same root (see **How state files relate to tenants** above).
 
 ```bash
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering state rm \

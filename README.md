@@ -14,7 +14,6 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Tenants**: create/read/delete
 - **Tenant servers (GPUs)**: allocate/deallocate
 - **VPC peering**
-- **Async workflows**: present in schema for forward compatibility, but **disabled in the current release** (use `respond-sync`)
 
 ## Examples (copy/paste friendly)
 
@@ -22,6 +21,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
   - `01-tenant`: tenant lifecycle
   - `02-servers`: GPU allocation/deallocation
   - `03-vpcpeering`: VPC peering
+- **State files**: each root keeps its own state; use one consistent `tenant_name` across those commands for the same tenant, new state filenames for a different tenant, and follow the guides for VPC peering cleanup. See **How state files relate to tenants** in `README.docker.md` or `README.make.md`.
 
 Start here for exact commands: `examples/decoupled/README.md`.
 
