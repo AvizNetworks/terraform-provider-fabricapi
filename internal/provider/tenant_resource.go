@@ -295,6 +295,32 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
+
+	// Fail-fast: webhook options are only meaningful for async operations.
+	// In sync mode, reject webhook-specific attributes so users don't assume they're applied.
+	if !strings.EqualFold(preferHeaderValue(prefer), "respond-async") {
+		webhooksEnabledSetTrue := !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() && data.WebhooksEnabled.ValueBool()
+		webhookEventsSet := false
+		if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+			var tmp []string
+			resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &tmp, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			webhookEventsSet = len(tmp) > 0
+		}
+		// Note: webhook_url may be set to a module/provider default even when webhook usage
+		// is disabled. Only fail-fast when the user is actually trying to use webhooks.
+		if webhooksEnabledSetTrue || webhookEventsSet {
+			resp.Diagnostics.AddError(
+				"Webhook options require async mode",
+				"Webhook options are only used when `prefer` is `respond-async` and `webhooks_enabled=true`.\n\n"+
+					"You are using sync mode (`prefer=respond-sync`), so `webhooks_enabled=true` and non-empty `webhook_events` are not allowed.\n\n"+
+					"Fix: either set `prefer=respond-async` (and keep webhook settings), or set `webhooks_enabled=false` and remove `webhook_events` for sync mode.",
+			)
+			return
+		}
+	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
 		webhooksEnabled = data.WebhooksEnabled.ValueBool()
@@ -497,6 +523,31 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
 		)
 		return
+	}
+
+	// Fail-fast: webhook options are only meaningful for async operations.
+	if !strings.EqualFold(preferHeaderValue(prefer), "respond-async") {
+		webhooksEnabledSetTrue := !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() && data.WebhooksEnabled.ValueBool()
+		webhookEventsSet := false
+		if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+			var tmp []string
+			resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &tmp, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+			webhookEventsSet = len(tmp) > 0
+		}
+		// Note: webhook_url may be set to a module/provider default even when webhook usage
+		// is disabled. Only fail-fast when the user is actually trying to use webhooks.
+		if webhooksEnabledSetTrue || webhookEventsSet {
+			resp.Diagnostics.AddError(
+				"Webhook options require async mode",
+				"Webhook options are only used when `prefer` is `respond-async` and `webhooks_enabled=true`.\n\n"+
+					"You are using sync mode (`prefer=respond-sync`), so `webhooks_enabled=true` and non-empty `webhook_events` are not allowed.\n\n"+
+					"Fix: either set `prefer=respond-async` (and keep webhook settings), or set `webhooks_enabled=false` and remove `webhook_events` for sync mode.",
+			)
+			return
+		}
 	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
