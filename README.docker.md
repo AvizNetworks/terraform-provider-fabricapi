@@ -54,7 +54,7 @@ Choose one authentication method and run **one** of the following commands.
 docker run -it --rm \
   -e FABRIC_API_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
   -e FABRIC_API_AUTH_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
-  -e FABRIC_NAME="YOUR_FABRIC_NAME" \
+  -e FABRIC_NAME="fabric01" \
   -e FABRIC_API_ACCESS_TOKEN="eyJ..." \
   -e FABRIC_API_REFRESH_TOKEN="..." \
   -v "$PWD:/repo" \
@@ -67,7 +67,7 @@ docker run -it --rm \
 docker run -it --rm \
   -e FABRIC_API_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
   -e FABRIC_API_AUTH_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
-  -e FABRIC_NAME="YOUR_FABRIC_NAME" \
+  -e FABRIC_NAME="fabric01" \
   -e FABRIC_API_USERNAME="YOUR_USERNAME" \
   -e FABRIC_API_PASSWORD="YOUR_PASSWORD" \
   -v "$PWD:/repo" \
@@ -99,7 +99,7 @@ docker run -it --rm \
   -u "$(id -u):$(id -g)" \
   -e FABRIC_API_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
   -e FABRIC_API_AUTH_ENDPOINT="https://YOUR_FABRIC_API_HOST:8089" \
-  -e FABRIC_NAME="YOUR_FABRIC_NAME" \
+  -e FABRIC_NAME="fabric01" \
   -e FABRIC_API_USERNAME="YOUR_USERNAME" \
   -e FABRIC_API_PASSWORD="YOUR_PASSWORD" \
   -v "$PWD:/repo" \
@@ -129,6 +129,8 @@ terraform -chdir=/repo/examples/decoupled/03-vpcpeering init -upgrade
 The following sections walk through a full end-to-end workflow. The examples use `prefer=respond-sync` (you can omit `prefer` where the defaults match).
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
+
+Example values such as **`fabric01`** (fabric), **`tenw01`** (tenant), and server names are illustrative—substitute your real names.
 
 ### State directories (one-time)
 
@@ -165,7 +167,7 @@ terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
 ```bash
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
-  -var="tenant_fabric=YOUR_FABRIC_NAME" \
+  -var="tenant_fabric=fabric01" \
   -var="tenant_name=tenw01" \
   -var="operation=ADD" \
   -var='servers=["hgx-su00-h00"]' \
@@ -188,7 +190,7 @@ terraform -chdir=/repo/examples/decoupled/03-vpcpeering apply -auto-approve \
 ```bash
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
-  -var="tenant_fabric=YOUR_FABRIC_NAME" \
+  -var="tenant_fabric=fabric01" \
   -var="tenant_name=tenw01" \
   -var="operation=DELETE" \
   -var='servers=["hgx-su00-h00"]' \

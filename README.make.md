@@ -42,7 +42,7 @@ The provider is configured primarily via environment variables.
 ### Endpoint
 
 - `FABRIC_API_ENDPOINT`: Fabric API base URL (example: `http://localhost:8787`)
-- `FABRIC_NAME`: Fabric name/ID (example: `YOUR_FABRIC_NAME`)
+- `FABRIC_NAME`: Fabric name/ID (example: `fabric01`)
 
 ### Important: fabric must already exist
 
@@ -101,11 +101,13 @@ The following commands demonstrate a full end-to-end workflow. The examples use 
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
 
+Example values such as **`fabric01`** (fabric), **`tenw01`** (tenant), and server names are illustrative—substitute your real names.
+
 ### 0) Configure connectivity (required)
 
 ```bash
 export FABRIC_API_ENDPOINT="http://YOUR_FABRIC_API_HOST:8787"
-export FABRIC_NAME="YOUR_FABRIC_NAME"
+export FABRIC_NAME="fabric01"
 ```
 
 ### State directories (one-time)
@@ -143,7 +145,7 @@ terraform -chdir=./examples/decoupled/01-tenant apply -auto-approve \
 ```bash
 terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
-  -var="tenant_fabric=YOUR_FABRIC_NAME" \
+  -var="tenant_fabric=fabric01" \
   -var="tenant_name=tenw01" \
   -var="operation=ADD" \
   -var='servers=["hgx-su00-h00"]' \
@@ -166,7 +168,7 @@ terraform -chdir=./examples/decoupled/03-vpcpeering apply -auto-approve \
 ```bash
 terraform -chdir=./examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
-  -var="tenant_fabric=YOUR_FABRIC_NAME" \
+  -var="tenant_fabric=fabric01" \
   -var="tenant_name=tenw01" \
   -var="operation=DELETE" \
   -var='servers=["hgx-su00-h00"]' \
