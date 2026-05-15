@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -28,16 +28,16 @@ type APIClient struct {
 	// When RefreshToken is present, the client will refresh the access token once on 401 responses.
 	Token        string
 	RefreshToken string
-	Username string
-	Password string
-	InsecureTLS bool
+	Username     string
+	Password     string
+	InsecureTLS  bool
 
 	mu             sync.Mutex
 	loginAttempted bool
 }
 
 type requestOptions struct {
-	Prefer          string   // respond-sync | respond-async (underscore forms normalized in preferHeaderValue)
+	Prefer          string // respond-sync | respond-async (underscore forms normalized in preferHeaderValue)
 	WebhooksEnabled bool
 	WebhookURL      string
 	WebhookEvents   []string
@@ -679,10 +679,10 @@ type TenantRequest struct {
 // tenantName, description, maxGpusAllowed, shared (flat only).
 func tenantCreateAsyncFlatBody(t TenantRequest) map[string]any {
 	return map[string]any{
-		"tenantName":      t.TenantName,
-		"description":     t.Description,
-		"maxGpusAllowed":  t.MaxGpusAllowed,
-		"shared":          false,
+		"tenantName":     t.TenantName,
+		"description":    t.Description,
+		"maxGpusAllowed": t.MaxGpusAllowed,
+		"shared":         false,
 	}
 }
 

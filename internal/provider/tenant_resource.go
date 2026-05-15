@@ -33,16 +33,16 @@ type TenantResource struct {
 }
 
 type TenantResourceModel struct {
-	TenantName     types.String `tfsdk:"tenant_name"`
-	Description    types.String `tfsdk:"description"`
-	MaxGpusAllowed types.Int64  `tfsdk:"max_gpus_allowed"`
-	FabricName     types.String `tfsdk:"fabric_name"`
-	Prefer         types.String `tfsdk:"prefer"`
-	WebhooksEnabled types.Bool  `tfsdk:"webhooks_enabled"`
-	WebhookURL     types.String `tfsdk:"webhook_url"`
-	WebhookEvents  types.List   `tfsdk:"webhook_events"`
-	OperationID    types.String `tfsdk:"operation_id"`
-	ID             types.String `tfsdk:"id"`
+	TenantName      types.String `tfsdk:"tenant_name"`
+	Description     types.String `tfsdk:"description"`
+	MaxGpusAllowed  types.Int64  `tfsdk:"max_gpus_allowed"`
+	FabricName      types.String `tfsdk:"fabric_name"`
+	Prefer          types.String `tfsdk:"prefer"`
+	WebhooksEnabled types.Bool   `tfsdk:"webhooks_enabled"`
+	WebhookURL      types.String `tfsdk:"webhook_url"`
+	WebhookEvents   types.List   `tfsdk:"webhook_events"`
+	OperationID     types.String `tfsdk:"operation_id"`
+	ID              types.String `tfsdk:"id"`
 }
 
 func (r *TenantResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -107,7 +107,7 @@ func (r *TenantResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				ElementType:         types.StringType,
 			},
 			"operation_id": schema.StringAttribute{
-				MarkdownDescription: "Operation/job id for async requests (202). Used for polling when webhooks are disabled.",
+				MarkdownDescription: "Operation/job id for async requests (202). The provider polls GET /operations/{id} until completion whenever an id is returned (including when webhooks are enabled).",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -366,26 +366,23 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	// Async polling only when webhooks are disabled.
-	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+	// For all async responses that include an operation id, poll until the backend reports completion.
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
 		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 			resp.Diagnostics.AddError("Async operation failed", err.Error())
 			return
 		}
 	}
 
-	// Preserve previous behavior (readiness wait) only when we are not relying on webhook async.
-	if !(strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled) {
-		// --- WAIT FOR TENANT READINESS (prevents backend NullPointerException) ---
-		err = r.client.WaitForTenantReady(ctx, fabricName, data.TenantName.ValueString(), 60*time.Second)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Tenant provisioning not completed",
-				fmt.Sprintf("Tenant %s was created but controller did not finish provisioning: %s",
-					data.TenantName.ValueString(), err),
-			)
-			return
-		}
+	// --- WAIT FOR TENANT READINESS (prevents backend NullPointerException) ---
+	err = r.client.WaitForTenantReady(ctx, fabricName, data.TenantName.ValueString(), 60*time.Second)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"Tenant provisioning not completed",
+			fmt.Sprintf("Tenant %s was created but controller did not finish provisioning: %s",
+				data.TenantName.ValueString(), err),
+		)
+		return
 	}
 
 	// State must match the plan exactly (avoids "inconsistent result" / phantom attributes).
@@ -599,7 +596,7 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		)
 	}
 
-	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
 		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 			resp.Diagnostics.AddError("Async operation failed", err.Error())
 			return

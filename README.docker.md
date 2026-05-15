@@ -219,6 +219,135 @@ terraform -chdir=/repo/examples/decoupled/03-vpcpeering state rm \
   fabricapi_vpcpeering.this
 ```
 
+## End-to-end commands (async + webhooks) — inside the container
+
+Mirrors the sync workflow above with **`prefer=respond-async`** and webhooks for **tenant** and **GPU** steps. **VPC peering stays sync-only.**
+
+### What is async?
+
+| Mode | HTTP `Prefer` | FM | Terraform |
+|------|---------------|-----|-----------|
+| **Sync** | `respond-sync` (default) | Blocks until done; **200** | Waits on HTTP response |
+| **Async** | `respond-async` | **202** + `operationId` | Polls **`GET /operations/{id}`** until terminal status |
+
+**Webhooks:** With `webhooks_enabled=true`, FM POSTs to **`webhook_url`**. Run `webhook_tester.py` on a host **FM can reach** (often the Docker host, not inside the container). Use **`http://`** for the webhook URL in lab setups.
+
+**Valid `webhook_events`:** `tenant.create`, `tenant.delete`, `tenant.allocate`, `tenant.deallocate`
+
+### Webhook listener (on Docker host — before Terraform)
+
+On the machine where FM can reach the listener (example port **5001**):
+
+```bash
+pip3 install flask
+python3 webhook_tester.py --host 0.0.0.0 --port 5001
+```
+
+Optional SSE (from host or container if routing allows):
+
+```bash
+curl -N -s -H "Accept: text/event-stream" \
+  "http://YOUR_FM_HOST:5001/test/webhook-receiver/stream"
+```
+
+Pass the same `FABRIC_API_*` / `FABRIC_NAME` / auth env vars into `docker run` as in the sync workflow (see **Run the container** above). Inside the container, also set:
+
+```bash
+export WEBHOOK_URL="http://YOUR_FM_HOST:5001/test/webhook-receiver"
+export TENANT="tenw01"
+export TENANT_DESC="TF async webhook tenant"
+export MAX_GPUS=8
+```
+
+Use separate state files from the sync e2e (example: `e2e_async_*.tfstate`).
+
+### Tenant creation (async + webhooks)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
+  -state=states/e2e_async_tenant.tfstate \
+  -var="tenant_name=${TENANT}" \
+  -var="tenant_description=${TENANT_DESC}" \
+  -var="max_gpus_allowed=${MAX_GPUS}" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var="webhook_url=${WEBHOOK_URL}" \
+  -var='webhook_events=["tenant.create"]'
+```
+
+### GPU allocation (ADD, async + webhooks)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_async_servers.tfstate \
+  -var="tenant_fabric=fabric01" \
+  -var="tenant_name=${TENANT}" \
+  -var="operation=ADD" \
+  -var='servers=["hgx-su00-h00"]' \
+  -var="shared=true" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var="webhook_url=${WEBHOOK_URL}" \
+  -var='webhook_events=["tenant.allocate"]'
+```
+
+### VPC peering creation (sync only)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/03-vpcpeering apply -auto-approve \
+  -state=states/e2e_async_vpc.tfstate \
+  -var="tenant_name=${TENANT}" \
+  -var="vpcpeering_name=${TENANT}-peer" \
+  -var="prefer=respond-sync" \
+  -var="webhooks_enabled=false" \
+  -var="delete_on_destroy=false"
+```
+
+### GPU deallocation (DELETE, async + webhooks)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_async_servers.tfstate \
+  -var="tenant_fabric=fabric01" \
+  -var="tenant_name=${TENANT}" \
+  -var="operation=DELETE" \
+  -var='servers=["hgx-su00-h00"]' \
+  -var="shared=false" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var="webhook_url=${WEBHOOK_URL}" \
+  -var='webhook_events=["tenant.deallocate"]'
+```
+
+### Tenant deletion (async + webhooks)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
+  -state=states/e2e_async_tenant.tfstate \
+  -var="tenant_name=${TENANT}" \
+  -var="tenant_description=${TENANT_DESC}" \
+  -var="max_gpus_allowed=${MAX_GPUS}" \
+  -var="prefer=respond-async" \
+  -var="webhooks_enabled=true" \
+  -var="webhook_url=${WEBHOOK_URL}" \
+  -var='webhook_events=["tenant.delete"]'
+```
+
+### VPC peering destroy (optional)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/03-vpcpeering destroy -auto-approve \
+  -state=states/e2e_async_vpc.tfstate \
+  -var="tenant_name=${TENANT}" \
+  -var="vpcpeering_name=${TENANT}-peer"
+```
+
+### Verify webhooks (optional)
+
+```bash
+curl -s "${WEBHOOK_URL}" | python3 -m json.tool
+```
+
 ## Troubleshooting
 
 - **Container can’t reach API**: verify the endpoint is reachable from Docker networking. If you’re calling a host-local endpoint, try adding `--network host` (local testing only).
