@@ -1320,6 +1320,75 @@ func (c *APIClient) CreateVpcPeeringWithResponseAndOptions(
 	return bodyStr, "", nil
 }
 
+// GPUOperation is either "ADD" or "DELETE".
+type GPUOperation string
+
+const (
+	GPUOperationAdd    GPUOperation = "ADD"
+	GPUOperationDelete GPUOperation = "DELETE"
+)
+
+// ServerGPUs holds the list of GPU identifiers for a single compute node.
+type ServerGPUs struct {
+	GPUs []string `json:"gpus"`
+}
+
+// GPUAllocationRequest is the body for POST /fabrics/{fabric}/tenants/{tenant}/gpuAllocations.
+// Suid maps a server index (e.g. "0", "1") to a map of hostname → ServerGPUs.
+type GPUAllocationRequest struct {
+	Operation GPUOperation                         `json:"operation"`
+	Suid      map[string]map[string]ServerGPUs     `json:"suid"`
+}
+
+// GPUAllocationResponse is the parsed response from the gpuAllocations endpoint.
+type GPUAllocationResponse struct {
+	// Raw body is captured for debugging; structured fields can be added as the API evolves.
+	Body string
+}
+
+// ModifyGPUAllocations calls POST /fabrics/{fabricName}/tenants/{tenantName}/gpuAllocations.
+// operation must be "ADD" or "DELETE".
+func (c *APIClient) ModifyGPUAllocations(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	req GPUAllocationRequest,
+) (*GPUAllocationResponse, error) {
+	op := GPUOperation(strings.ToUpper(strings.TrimSpace(string(req.Operation))))
+	if op != GPUOperationAdd && op != GPUOperationDelete {
+		return nil, fmt.Errorf("invalid GPU operation %q: must be ADD or DELETE", req.Operation)
+	}
+	req.Operation = op
+
+	if strings.TrimSpace(fabricName) == "" {
+		return nil, fmt.Errorf("fabricName must not be empty")
+	}
+	if strings.TrimSpace(tenantName) == "" {
+		return nil, fmt.Errorf("tenantName must not be empty")
+	}
+
+	u := fmt.Sprintf("%s/fabrics/%s/tenants/%s/gpuAllocations",
+		strings.TrimRight(c.Endpoint, "/"),
+		url.PathEscape(fabricName),
+		url.PathEscape(tenantName),
+	)
+
+	respBody, status, err := c.doRequestRaw(ctx, http.MethodPost, u, req, 60*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return nil, fmt.Errorf("gpuAllocations API returned %d", status)
+		}
+		return nil, fmt.Errorf("gpuAllocations API returned %d: %s", status, bodyStr)
+	}
+
+	return &GPUAllocationResponse{Body: bodyStr}, nil
+}
+
 func (c *APIClient) WaitForTenantReady(
 	ctx context.Context,
 	fabric string,
