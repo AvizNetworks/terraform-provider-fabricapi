@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     fabricapi = {
-      source  = "registry.terraform.io/local/fabricapi"
+      source  = "local/fabricapi"
       version = "1.0.0"
     }
   }

@@ -215,6 +215,10 @@ func (r *GPUAllocationsResource) Update(ctx context.Context, req resource.Update
 		resp.Diagnostics.AddError("Invalid servers", err.Error())
 		return
 	}
+	if len(entries) == 0 {
+		resp.Diagnostics.AddError("No servers", "At least one server entry is required.")
+		return
+	}
 
 	_, apiErr := r.client.ModifyGPUAllocations(ctx, fabricName, tenantName, GPUAllocationRequest{
 		Operation: GPUOperation(operation),
@@ -241,7 +245,11 @@ func (r *GPUAllocationsResource) Delete(ctx context.Context, req resource.Delete
 	tenantName := data.TenantName.ValueString()
 
 	entries, err := readServerEntries(ctx, data.Servers)
-	if err != nil || len(entries) == 0 {
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid servers", err.Error())
+		return
+	}
+	if len(entries) == 0 {
 		// Nothing to deallocate; just remove from state.
 		resp.State.RemoveResource(ctx)
 		return
