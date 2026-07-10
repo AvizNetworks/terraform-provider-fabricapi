@@ -36,7 +36,7 @@ This repository's version follows [Semantic Versioning (SemVer)](https://semver.
 
 | Terraform-provider-fabricapi | Supported ONES Version |
 |------------------------------|---------------------   |
-|           v1.0.0             |      4.2.1             |
+|           v1.1.0             |      4.2.1             |
 
 
 ## Quick links
