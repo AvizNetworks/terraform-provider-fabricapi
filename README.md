@@ -25,9 +25,24 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 
 Start here for exact commands: `examples/decoupled/README.md`.
 
+## Versioning Policy
+
+This repository's version follows [Semantic Versioning (SemVer)](https://semver.org/) (`MAJOR.MINOR.PATCH`) and is maintained **independently** of AVIZ ONES Spectrum-X platform releases — a version bump here does not imply a corresponding change in the ONES platform version, and vice versa.
+- MAJOR: Incremented for breaking, backward-incompatible changes (e.g., 2.0.0)
+- MINOR: Incremented when adding new, backward-compatible features or functionality (e.g., 2.1.0)
+- PATCH: Incremented for backward-compatible bug fixes and small corrections (e.g., 2.1.1)
+
+### Compatibility Matrix
+
+| Terraform-provider-fabricapi | Supported ONES Version |
+|------------------------------|---------------------   |
+|           v1.0.0             |      4.2.1             |
+
+
 ## Quick links
 
 - **Docker guide**: `README.docker.md`
 - **Make/local guide**: `README.make.md`
 - **Reusable identity file**: `examples/fabric-identity.md`
 - **Contributing / development**: `CONTRIBUTING.md`
+
