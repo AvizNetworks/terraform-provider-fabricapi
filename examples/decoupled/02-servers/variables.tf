@@ -26,17 +26,9 @@ variable "shared" {
 }
 
 variable "prefer" {
-  description = "Prefer mode: respond-sync (default). Async (respond-async) is disabled in the current release."
+  description = "HTTP Prefer: respond-sync (default) or respond-async. When async returns an operation id, the provider polls until completion."
   type        = string
   default     = "respond-sync"
-
-  validation {
-    condition = !contains(
-      ["respond-async", "respond_async"],
-      lower(trimspace(var.prefer)),
-    )
-    error_message = "Async is currently not supported. Use prefer=respond-sync (default)."
-  }
 }
 
 variable "webhooks_enabled" {

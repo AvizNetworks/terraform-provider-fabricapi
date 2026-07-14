@@ -24,17 +24,17 @@ type TenantServersResource struct {
 }
 
 type TenantServersResourceModel struct {
-	TenantName types.String `tfsdk:"tenant_name"`
-	FabricName types.String `tfsdk:"fabric_name"`
-	Operation  types.String `tfsdk:"operation"`
-	Servers    types.List   `tfsdk:"servers"`
-	Shared     types.Bool   `tfsdk:"shared"`
-	Prefer         types.String `tfsdk:"prefer"`
-	WebhooksEnabled types.Bool  `tfsdk:"webhooks_enabled"`
-	WebhookURL     types.String `tfsdk:"webhook_url"`
-	WebhookEvents  types.List   `tfsdk:"webhook_events"`
-	OperationID    types.String `tfsdk:"operation_id"`
-	ID         types.String `tfsdk:"id"`
+	TenantName      types.String `tfsdk:"tenant_name"`
+	FabricName      types.String `tfsdk:"fabric_name"`
+	Operation       types.String `tfsdk:"operation"`
+	Servers         types.List   `tfsdk:"servers"`
+	Shared          types.Bool   `tfsdk:"shared"`
+	Prefer          types.String `tfsdk:"prefer"`
+	WebhooksEnabled types.Bool   `tfsdk:"webhooks_enabled"`
+	WebhookURL      types.String `tfsdk:"webhook_url"`
+	WebhookEvents   types.List   `tfsdk:"webhook_events"`
+	OperationID     types.String `tfsdk:"operation_id"`
+	ID              types.String `tfsdk:"id"`
 }
 
 func (r *TenantServersResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -85,7 +85,7 @@ func (r *TenantServersResource) Schema(ctx context.Context, req resource.SchemaR
 				ElementType:         types.StringType,
 			},
 			"operation_id": schema.StringAttribute{
-				MarkdownDescription: "Operation/job id for async requests (202). Used for polling when webhooks are disabled.",
+				MarkdownDescription: "Operation/job id for async requests (202). After any async call, the provider polls GET /operations/{id} until completion when an id is returned (including when webhooks are enabled).",
 				Computed:            true,
 			},
 			"id": schema.StringAttribute{
@@ -183,6 +183,22 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
 		return
 	}
+	// After async tenant creation, GET /tenants/{name} can briefly return 404 even though the
+	// create operation completed. For ADD, wait and retry instead of failing immediately.
+	if tenantInfo == nil && operation == "ADD" {
+		if werr := r.client.WaitForTenantReady(ctx, fabricName, tenantName, 5*time.Minute); werr != nil {
+			resp.Diagnostics.AddError(
+				"Tenant not found",
+				fmt.Sprintf("Tenant %q is not visible in fabric %q after waiting (GPU allocation needs an existing tenant). Underlying: %s", tenantName, fabricName, werr),
+			)
+			return
+		}
+		tenantInfo, err = r.client.GetTenantWithFabric(fabricName, tenantName)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant: %s", err))
+			return
+		}
+	}
 	if tenantInfo == nil {
 		resp.Diagnostics.AddError(
 			"Tenant not found",
@@ -212,15 +228,6 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 				)
 				return
 			}
-		}
-	}
-	if operation == "ADD" {
-		if err := r.client.WaitForTenantReady(ctx, fabricName, tenantName, 60*time.Second); err != nil {
-			resp.Diagnostics.AddError(
-				"Tenant not ready",
-				fmt.Sprintf("Cannot allocate GPUs until tenant %s is readable: %s", tenantName, err),
-			)
-			return
 		}
 	}
 
@@ -324,7 +331,7 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 		return
 	}
 
-	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
 		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 			resp.Diagnostics.AddError("Async operation failed", err.Error())
 			return
@@ -332,7 +339,7 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 	}
 
 	// State semantics:
-	// - For ADD: servers represents the allocated set, so we read back from API (unless async+webhook).
+	// - For ADD: always read back from API so state reflects the backend after sync or async+polling.
 	// - For DELETE: servers represents the deletion request list (imperative), not the final allocation set.
 	if operation == "DELETE" {
 		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizeServerList(servers))
@@ -341,7 +348,7 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 			return
 		}
 		data.Servers = serverList
-	} else if !(strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled) {
+	} else {
 		// Read back from API so state reflects the backend instead of only the request.
 		refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
 		if err != nil {
@@ -354,14 +361,6 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 		}
 
 		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		data.Servers = serverList
-	} else {
-		// Async+webhook: do not block; keep planned servers list.
-		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizeServerList(servers))
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -551,7 +550,7 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to deallocate tenant servers: %s", err))
 			return
 		}
-		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
 			if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 				resp.Diagnostics.AddError("Async operation failed", err.Error())
 				return
@@ -636,7 +635,7 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to allocate tenant servers: %s", err))
 			return
 		}
-		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+		if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
 			if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 				resp.Diagnostics.AddError("Async operation failed", err.Error())
 				return
@@ -646,7 +645,8 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 		mutationOpID = opID
 	}
 
-	// If async+webhook, do not block on backend updates; keep desired plan servers.
+	// After mutations, refresh servers from the API for non-DELETE so state matches the backend
+	// (including async+webhooks after operation polling completes).
 	preferFinal := "respond-sync"
 	if !plan.Prefer.IsNull() && strings.TrimSpace(plan.Prefer.ValueString()) != "" {
 		preferFinal = plan.Prefer.ValueString()
@@ -663,7 +663,7 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			return
 		}
 		plan.Servers = serverList
-	} else if !(strings.EqualFold(preferHeaderValue(preferFinal), "respond-async") && webhooksEnabledFinal) {
+	} else {
 		refreshed, err := r.client.GetTenantWithFabric(fabricName, tenantName)
 		if err != nil {
 			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after update: %s", err))
@@ -675,17 +675,6 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 		}
 
 		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		plan.Servers = serverList
-	} else {
-		// Async+webhook: do not block.
-		// Keep the requested list in state until the async operation completes.
-		// Note: when operation==DELETE, desiredServers is the deletion request list (imperative),
-		// not the post-delete allocation set.
-		serverList, diags := types.ListValueFrom(ctx, types.StringType, desiredServers)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -811,7 +800,7 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to deallocate tenant servers: %s", err))
 		return
 	}
-	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !webhooksEnabled && strings.TrimSpace(opID) != "" {
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
 		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
 			resp.Diagnostics.AddError("Async operation failed", err.Error())
 			return
@@ -876,4 +865,3 @@ func diffServers(current, desired []string) (toAdd, toDelete []string) {
 	}
 	return toAdd, toDelete
 }
-

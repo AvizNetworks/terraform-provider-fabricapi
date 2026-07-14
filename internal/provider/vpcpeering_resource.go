@@ -95,7 +95,7 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 			// Kept for forward compatibility (async/webhooks), but current Create path
 			// works fine even when these are omitted (defaults are stored in state).
 			"prefer": schema.StringAttribute{
-				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). Underscore forms are accepted and normalized.",
+				MarkdownDescription: "Prefer mode: respond-sync (default) or respond-async (HTTP Prefer). If respond-async is used and the API returns an operation id, the provider polls GET /operations/{id} until completion before writing state.",
 				Optional:            true,
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
@@ -103,7 +103,7 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				},
 			},
 			"webhooks_enabled": schema.BoolAttribute{
-				MarkdownDescription: "When prefer is respond-async, set true to include enableWebhook, webhookUrl, webhookEvents in the request body. If unset, false is used.",
+				MarkdownDescription: "Enable webhook callback payload for async operations (Prefer: respond-async). If unset, false is used.",
 				Optional:            true,
 				Computed:            true,
 			},
@@ -122,7 +122,7 @@ func (r *VpcPeeringResource) Schema(ctx context.Context, req resource.SchemaRequ
 				ElementType:         types.StringType,
 			},
 			"operation_id": schema.StringAttribute{
-				MarkdownDescription: "Async operation id when the API returns 202 (useful for GET /operations/{id} when webhooks_enabled=false).",
+				MarkdownDescription: "Async operation id when the API returns 202. When present, the provider polls GET /operations/{id} until completion before writing state.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -164,9 +164,54 @@ func (r *VpcPeeringResource) Configure(ctx context.Context, req resource.Configu
 	r.client = client
 }
 
+func validateVpcPeeringAsyncInputs(ctx context.Context, data *VpcPeeringResourceModel, resp *resource.CreateResponse) {
+	prefer := "respond-sync"
+	if !data.Prefer.IsNull() && !data.Prefer.IsUnknown() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
+		prefer = data.Prefer.ValueString()
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && !asyncEnabled() {
+		resp.Diagnostics.AddError(
+			"Async not supported",
+			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
+		)
+		return
+	}
+
+	// Validate webhook inputs only for async+enabled.
+	webhooksEnabled := false
+	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
+		webhooksEnabled = data.WebhooksEnabled.ValueBool()
+	}
+	webhookURL := ""
+	if !data.WebhookURL.IsNull() && !data.WebhookURL.IsUnknown() {
+		webhookURL = strings.TrimSpace(data.WebhookURL.ValueString())
+	}
+	var webhookEvents []string
+	if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+		resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && webhooksEnabled {
+		if strings.TrimSpace(webhookURL) == "" || len(webhookEvents) == 0 {
+			resp.Diagnostics.AddError(
+				"Missing webhook configuration",
+				"When prefer is respond-async and webhooks_enabled is true, both webhook_url and webhook_events must be provided.",
+			)
+			return
+		}
+	}
+}
+
 func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data VpcPeeringResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	validateVpcPeeringAsyncInputs(ctx, &data, resp)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -292,8 +337,32 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		PeerVpcName: storageVPC,
 	}
 
-	// Current backend: VPC peering does NOT integrate webhooks. Use sync API call.
-	respBody, err := r.client.CreateVpcPeeringWithResponse(ctx, targetFab, reqBody)
+	prefer := "respond-sync"
+	if !data.Prefer.IsNull() && !data.Prefer.IsUnknown() && strings.TrimSpace(data.Prefer.ValueString()) != "" {
+		prefer = data.Prefer.ValueString()
+	}
+	webhooksEnabled := false
+	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
+		webhooksEnabled = data.WebhooksEnabled.ValueBool()
+	}
+	webhookURL := "http://localhost:8787/test/webhook-receiver"
+	if !data.WebhookURL.IsNull() && !data.WebhookURL.IsUnknown() && strings.TrimSpace(data.WebhookURL.ValueString()) != "" {
+		webhookURL = data.WebhookURL.ValueString()
+	}
+	var webhookEvents []string
+	if !data.WebhookEvents.IsNull() && !data.WebhookEvents.IsUnknown() {
+		resp.Diagnostics.Append(data.WebhookEvents.ElementsAs(ctx, &webhookEvents, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	respBody, opID, err := r.client.CreateVpcPeeringWithResponseAndOptions(ctx, targetFab, reqBody, &requestOptions{
+		Prefer:          prefer,
+		WebhooksEnabled: webhooksEnabled,
+		WebhookURL:      webhookURL,
+		WebhookEvents:   webhookEvents,
+	})
 	if err != nil {
 		if vpcPeeringErrMeansAlreadyExists(err) {
 			fmt.Fprintf(os.Stderr,
@@ -316,6 +385,13 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 		}
 	}
 
+	if strings.EqualFold(preferHeaderValue(prefer), "respond-async") && strings.TrimSpace(opID) != "" {
+		if err := r.client.WaitForOperationDone(ctx, opID, 60*time.Minute); err != nil {
+			resp.Diagnostics.AddError("Async operation failed", err.Error())
+			return
+		}
+	}
+
 	// Store computed/resolved fields in state.
 	data.VpcName = types.StringValue(reqBody.VpcName)
 	data.PeerVpcName = types.StringValue(reqBody.PeerVpcName)
@@ -325,25 +401,20 @@ func (r *VpcPeeringResource) Create(ctx context.Context, req resource.CreateRequ
 	data.TargetFabric = types.StringValue(targetFab)
 	data.TenantFabric = types.StringValue(tenantFabric)
 
-	// Persist defaults for forward-compat fields so state is stable.
-	if data.Prefer.IsNull() || strings.TrimSpace(data.Prefer.ValueString()) == "" {
-		data.Prefer = types.StringValue("respond-sync")
+	data.Prefer = types.StringValue(prefer)
+	data.WebhooksEnabled = types.BoolValue(webhooksEnabled)
+	data.WebhookURL = types.StringValue(webhookURL)
+	evList, diags := types.ListValueFrom(ctx, types.StringType, webhookEvents)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
 	}
-	if data.WebhooksEnabled.IsNull() || data.WebhooksEnabled.IsUnknown() {
-		data.WebhooksEnabled = types.BoolValue(false)
+	data.WebhookEvents = evList
+	if strings.TrimSpace(opID) == "" {
+		data.OperationID = types.StringNull()
+	} else {
+		data.OperationID = types.StringValue(opID)
 	}
-	if data.WebhookURL.IsNull() || strings.TrimSpace(data.WebhookURL.ValueString()) == "" {
-		data.WebhookURL = types.StringValue("http://localhost:8787/test/webhook-receiver")
-	}
-	if data.WebhookEvents.IsNull() || data.WebhookEvents.IsUnknown() {
-		evList, diags := types.ListValueFrom(ctx, types.StringType, []string{})
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-		data.WebhookEvents = evList
-	}
-	data.OperationID = types.StringNull()
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
