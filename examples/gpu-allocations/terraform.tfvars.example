@@ -1,0 +1,14 @@
+tenant_name = "example-tenant"
+operation   = "ADD"
+
+# Each entry = one server unit.
+# index    = position in the suid map ("0", "1", ...)
+# hostname = the compute node name
+# gpus     = specific GPUs to allocate on that node (partial subset)
+servers = [
+  {
+    index    = "0"
+    hostname = "example-server"
+    gpus     = ["G0", "G1"]
+  },
+]

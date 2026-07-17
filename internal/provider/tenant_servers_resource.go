@@ -9,6 +9,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -49,10 +51,16 @@ func (r *TenantServersResource) Schema(ctx context.Context, req resource.SchemaR
 			"tenant_name": schema.StringAttribute{
 				MarkdownDescription: "Name of the tenant",
 				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"fabric_name": schema.StringAttribute{
 				MarkdownDescription: "Fabric name for the backend URL /fabrics/{fabric}/tenants/{tenant}. If unset, uses provider-level fabric.",
 				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"operation": schema.StringAttribute{
 				MarkdownDescription: "ADD, DELETE, or REMOVE (REMOVE aliases DELETE). On **create**, this is sent to the API with `servers`. On **update**, allocation changes are driven by diffing **servers** (desired set) against the live tenant from the API: servers removed from the list are deallocated (DELETE); new names are allocated (ADD). Changing only `operation` without changing `servers` may perform no API call if the set already matches the backend.",
@@ -198,19 +206,22 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 
 	// --- PRE-ALLOCATION CONFLICT CHECK ---
 	if operation == "ADD" {
-		allocated, err := r.client.GetAllocatedServers(ctx, fabricName)
-		if err != nil {
-			resp.Diagnostics.AddError("Client Error", err.Error())
-			return
-		}
-
-		for _, s := range servers {
-			if owner, exists := allocated[s]; exists && owner != tenantName {
-				resp.Diagnostics.AddError(
-					"Server already allocated",
-					fmt.Sprintf("Server %s is already allocated to tenant %s", s, owner),
-				)
+		shared := !data.Shared.IsNull() && !data.Shared.IsUnknown() && data.Shared.ValueBool()
+		if !shared {
+			allocated, err := r.client.GetAllocatedServers(ctx, fabricName)
+			if err != nil {
+				resp.Diagnostics.AddError("Client Error", err.Error())
 				return
+			}
+
+			for _, s := range servers {
+				if owner, exists := allocated[s]; exists && owner != tenantName {
+					resp.Diagnostics.AddError(
+						"Server already allocated",
+						fmt.Sprintf("Server %s is already allocated to tenant %s", s, owner),
+					)
+					return
+				}
 			}
 		}
 	}
