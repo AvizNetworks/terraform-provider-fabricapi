@@ -7,6 +7,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -43,10 +45,16 @@ func (r *GPUAllocationsResource) Schema(_ context.Context, _ resource.SchemaRequ
 			"tenant_name": schema.StringAttribute{
 				MarkdownDescription: "Name of the tenant.",
 				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"fabric_name": schema.StringAttribute{
 				MarkdownDescription: "Fabric name. If unset, uses the provider-level fabric.",
 				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"operation": schema.StringAttribute{
 				MarkdownDescription: "ADD or DELETE.",
