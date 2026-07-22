@@ -1,121 +1,300 @@
-# Decoupled workflow (3 separate applies)
+# Decoupled workflow
 
-This folder splits the original `examples/main.tf` into three independent Terraform roots so a user can run:
+This folder splits operations into independent Terraform roots so you can run each step separately (tenant, servers, per-GPU, discovery, VPC peering).
 
-- tenant creation
-- GPU allocation (tenant servers)
-- VPC peering
+Set **connection settings once** via environment variables:
 
-These examples are designed for a strict “user supplies inputs” workflow:
+- `FABRIC_API_ENDPOINT`
+- `FABRIC_NAME`
+- Auth: `FABRIC_API_USERNAME` / `FABRIC_API_PASSWORD`, or `FABRIC_API_ACCESS_TOKEN`
 
-- Set **only connection settings once** via environment variables:
-  - `FABRIC_API_ENDPOINT`
-  - `FABRIC_NAME`
-- For every operation, the user passes required inputs explicitly via `-var`:
-  - tenant name / description / max GPUs
-  - servers + shared + operation
-  - VPC peering name + fabric
+For each operation, pass inputs via `-var` (or a `*.tfvars` file).
 
-## Local usage (no Docker)
+## Recommended order (full tenant workflow)
 
-Run Terraform directly from your host, using `-chdir=...` to select the example root you want.
+| Step | Root | Terraform type | API | Notes |
+|------|------|----------------|-----|-------|
+| 1 | `01-tenant` | Resource | POST/DELETE tenant | Create tenant first |
+| 2 | `05-available-servers` | **Data source** | GET `.../available_servers` | Optional; lists free hostnames |
+| 3 | `02-servers` | Resource | PATCH tenant (ADD/DELETE servers) | Attach whole server(s) to tenant |
+| 4 | `04-gpu-allocations` | Resource | POST `.../gpuAllocations` | Per-GPU slices (e.g. G6, G7) on attached servers |
+| 5 | `03-vpcpeering` | Resource | POST vpcpeering | Optional; after tenant networking is ready |
+
+**Deallocate / cleanup (reverse order where applicable):**
+
+- Per-GPU: `04-gpu-allocations` with `operation=DELETE`
+- Whole server: `02-servers` with `operation=DELETE`
+- Tenant: `01-tenant` `destroy`
+
+## State files
+
+Each root keeps **its own** state file. Reuse the same `-state=...` path when continuing the same tenant workflow.
+
+| Root | Typical state file | Lifecycle |
+|------|-------------------|-----------|
+| `01-tenant` | `states/e2e_tenant.tfstate` | Resource — destroy to delete tenant |
+| `02-servers` | `states/e2e_servers.tfstate` | Resource — `operation=DELETE` to deallocate |
+| `04-gpu-allocations` | `states/e2e_gpu_alloc.tfstate` | Resource — `operation=DELETE` to deallocate GPUs |
+| `05-available-servers` | `states/e2e_available_servers.tfstate` | **Data source only** — refreshed each apply; no destroy needed |
+| `03-vpcpeering` | `states/e2e_vpc.tfstate` | Resource — see VPC peering notes in Docker/Make README |
+
+Use a **new state filename** when starting a different tenant or a clean run.
+
+## One-time setup (local)
+
+```bash
+export FABRIC_API_ENDPOINT="https://10.4.5.132:8089"
+export FABRIC_NAME="Get_fab"
+export FABRIC_API_USERNAME="superadmin"
+export FABRIC_API_PASSWORD="YOUR_PASSWORD"
+export FABRICAPI_INSECURE_TLS=1
+
+make install   # or ./docker-build.sh for Docker workflow
+
+mkdir -p examples/decoupled/01-tenant/states
+mkdir -p examples/decoupled/02-servers/states
+mkdir -p examples/decoupled/03-vpcpeering/states
+mkdir -p examples/decoupled/04-gpu-allocations/states
+mkdir -p examples/decoupled/05-available-servers/states
+
+rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
+rm -f examples/decoupled/02-servers/.terraform.lock.hcl
+rm -f examples/decoupled/03-vpcpeering/.terraform.lock.hcl
+rm -f examples/decoupled/04-gpu-allocations/.terraform.lock.hcl
+rm -f examples/decoupled/05-available-servers/.terraform.lock.hcl
+
+terraform -chdir=examples/decoupled/01-tenant init -upgrade
+terraform -chdir=examples/decoupled/02-servers init -upgrade
+terraform -chdir=examples/decoupled/03-vpcpeering init -upgrade
+terraform -chdir=examples/decoupled/04-gpu-allocations init -upgrade
+terraform -chdir=examples/decoupled/05-available-servers init -upgrade
+```
+
+**Fabric name is case-sensitive** — use the exact name from `GET /fabrics` (e.g. `Get_fab`, not `get_fab`).
+
+---
 
 ## 01 - Create tenant(s)
 
-This root uses **`for_each`** so you can manage **multiple tenants in one state** (each map key is one `fabricapi_tenant`). That avoids Terraform replacing tenant A when you add tenant B: the old behaviour came from a **single** resource whose `tenant_name` had `RequiresReplace()` when changed.
+Creates `fabricapi_tenant`. Supports multi-tenant via `for_each` (`var.tenants`) or legacy single-tenant variables.
 
-- **Multi-tenant (recommended):** set `var.tenants` (see `terraform.tfvars.example`).
-- **Legacy single-tenant:** leave `tenants` empty and pass `tenant_name`, `tenant_description`, `max_gpus_allowed`, etc.
+- Use **`prefer=respond-sync`** (async is disabled in the current release).
+- Requires **Terraform >= 1.5**.
 
-Use **`respond-sync`** in Terraform (HTTP `Prefer` header).
-
-Note: **async (`respond-async`) is disabled in the current release**; attempts to use it will fail fast with an "Async not supported" error.
-
-Requires **Terraform >= 1.5** (for `check` blocks).
-
-```bash
-export FABRIC_API_ENDPOINT="http://localhost:8787"
-export FABRIC_NAME="1SU-Fabric170619"
-
-# If you rebuilt the local provider binary, Terraform may reject it due to
-# outdated checksums in `.terraform.lock.hcl`. If that happens, delete the
-# lock file(s) in each example root and re-run init.
-
-rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
-terraform -chdir=examples/decoupled/01-tenant init
-terraform -chdir=examples/decoupled/01-tenant apply -auto-approve \
-  -var="tenant_name=madhu01" \
-  -var="tenant_description=TF Test tenant for GPU workloads" \
-  -var="max_gpus_allowed=32"
-```
-
-Example: three tenants (sync, async without webhooks, async with webhooks) via tfvars:
-
-```bash
-cp examples/decoupled/01-tenant/terraform.tfvars.example examples/decoupled/01-tenant/terraform.tfvars
-# edit URLs, events, and credentials as needed
-terraform -chdir=examples/decoupled/01-tenant apply -auto-approve
-```
-
-### Migrating existing state (single resource → for_each)
-
-If you previously had `fabricapi_tenant.this` with no index and upgrade to this layout:
-
-```bash
-terraform -chdir=examples/decoupled/01-tenant state mv \
-  'fabricapi_tenant.this' \
-  'fabricapi_tenant.this["madhu01"]'
-```
-
-Use the **actual** tenant name in place of `madhu01`.
-
-### Async + webhooks
-
-Async/webhooks inputs are retained in the example variables for forward compatibility, but **async is disabled in the current release**.
-
-### Non-interactive runs (avoid runtime prompts)
-
-Terraform will prompt at runtime if any **required** input variables are missing. To ensure a fully non-interactive run, always pass required values via `-var` (or use a `*.tfvars` file).
-
-Example (non-interactive run):
+### Sample commands
 
 ```bash
 terraform -chdir=examples/decoupled/01-tenant apply -auto-approve \
-  -var="tenant_name=terraform_test1" \
-  -var="tenant_description=terraform_test tenant" \
-  -var="max_gpus_allowed=8"
+  -state=states/e2e_tenant.tfstate \
+  -var="tenant_name=tenant1" \
+  -var="tenant_description=TF Get_fab test" \
+  -var="max_gpus_allowed=8" \
+  -var="prefer=respond-sync"
 ```
 
-## 02 - Allocate GPUs (servers)
+### Tenant deletion
 
 ```bash
-rm -f examples/decoupled/02-servers/.terraform.lock.hcl
-terraform -chdir=examples/decoupled/02-servers init
+terraform -chdir=examples/decoupled/01-tenant destroy -auto-approve \
+  -state=states/e2e_tenant.tfstate \
+  -var="tenant_name=tenant1" \
+  -var="tenant_description=TF Get_fab test" \
+  -var="max_gpus_allowed=8" \
+  -var="prefer=respond-sync"
+```
+
+---
+
+## 05 - Available servers (lookup)
+
+Read-only `fabricapi_available_servers` data source — GET `/fabrics/{fabric}/available_servers`.
+
+- Does **not** create or delete anything on the fabric.
+- Output: `available_gpus` (server hostnames currently free).
+- **Same state file can be reused forever** — each `apply` refreshes the list from the API.
+- No `destroy` or `terraform state rm` needed for normal use.
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/05-available-servers apply -auto-approve \
+  -state=states/e2e_available_servers.tfstate \
+  -var="fabric_name=Get_fab"
+```
+
+Use a hostname from the `available_gpus` output in step 02 (example below uses `hgx-su00-h00`).
+
+---
+
+## 02 - Allocate / deallocate whole servers
+
+Manages `fabricapi_tenant_servers` — PATCH tenant with `operation=ADD` or `DELETE`.
+
+- Tenant must exist (`01-tenant`).
+- Use real server hostnames (from `05-available-servers` or your fabric inventory).
+- Set `shared=true` when the fabric uses shared GPU servers / per-GPU allocation.
+
+### Sample commands — allocate (ADD)
+
+```bash
 terraform -chdir=examples/decoupled/02-servers apply -auto-approve \
-  -var="tenant_fabric=1SU-Fabric170619" \
-  -var="tenant_name=madhu01" \
-  -var='servers=["hgx-su00-h00","hgx-su00-h01","hgx-su00-h02","hgx-su00-h03"]' \
+  -state=states/e2e_servers.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=ADD" \
+  -var='servers=["hgx-su00-h00"]' \
   -var="shared=true" \
-  -var="operation=ADD"
+  -var="prefer=respond-sync"
 ```
 
-## 03 - Create VPC peering
+### Sample commands — deallocate (DELETE)
 
 ```bash
-rm -f examples/decoupled/03-vpcpeering/.terraform.lock.hcl
-terraform -chdir=examples/decoupled/03-vpcpeering init
+terraform -chdir=examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_servers.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=DELETE" \
+  -var='servers=["hgx-su00-h00"]' \
+  -var="prefer=respond-sync"
+```
+
+Tip: To deallocate all servers for a tenant, use `-var='servers=[]'`.
+
+---
+
+## 04 - Per-GPU allocations (shared / external fabrics)
+
+Manages `fabricapi_gpu_allocations` — POST `/fabrics/{fabric}/tenants/{tenant}/gpuAllocations`.
+
+**Prerequisites:**
+
+1. Tenant exists (`01-tenant`).
+2. Server is already attached to the tenant (`02-servers` ADD).
+3. Fabric is **externally managed** (`is_ones_controlled=false`). ONES-controlled fabrics use whole-server PATCH instead; `gpuAllocations` is rejected.
+
+**Request shape** (sent by the provider):
+
+```json
+{
+  "operation": "ADD",
+  "suid": {
+    "0": {
+      "hgx-su00-h00": { "gpus": ["G6", "G7"] }
+    }
+  }
+}
+```
+
+- `operation`: `ADD` or `DELETE` (also accepts `REMOVE` as alias for DELETE).
+- `allocations`: flat list in Terraform; flattened to API `suid` map (`suid` → hostname → GPU list).
+- GPU ids are logical names (`G0` … `G7` depending on fabric); pass any subset the backend allows.
+
+**State behavior:** same as `02-servers` — `operation=DELETE` keeps the resource in state; use `destroy` only when removing Terraform management entirely.
+
+### Sample commands — allocate GPUs (ADD)
+
+```bash
+terraform -chdir=examples/decoupled/04-gpu-allocations apply -auto-approve \
+  -state=states/e2e_gpu_alloc.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=ADD" \
+  -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
+  -var="prefer=respond-sync"
+```
+
+### Sample commands — deallocate GPUs (DELETE)
+
+```bash
+terraform -chdir=examples/decoupled/04-gpu-allocations apply -auto-approve \
+  -state=states/e2e_gpu_alloc.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=DELETE" \
+  -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
+  -var="prefer=respond-sync"
+```
+
+---
+
+## 03 - VPC peering
+
+Creates `fabricapi_vpcpeering`. Tenant should exist and networking should be ready.
+
+### Sample commands
+
+```bash
 terraform -chdir=examples/decoupled/03-vpcpeering apply -auto-approve \
-  -var="tenant_name=madhu01" \
-  -var="fabric=1SU-Fabric170619" \
-  -var="vpcpeering_name=tf-vpcpeering-madhu01" \
+  -state=states/e2e_vpc.tfstate \
+  -var="tenant_name=tenant1" \
+  -var="vpcpeering_name=tf-vpcpeering-tenant1" \
   -var="delete_on_destroy=false"
 ```
 
-## Notes
+Fabric is taken from `FABRIC_NAME` / provider `fabric` (set `Get_fab` in env before apply).
 
-- GPU deallocation is step 02 with `operation=DELETE` (or `REMOVE`):
-  - `shared` is optional and ignored for DELETE; you can omit it:
-    `terraform -chdir=examples/decoupled/02-servers apply -auto-approve ... -var="operation=DELETE"`
-- Tenant deletion:
-  - `terraform -chdir=examples/decoupled/01-tenant destroy -auto-approve -var="tenant_name=..."`
+---
 
+## Docker workflow (same commands, `/repo` paths)
+
+Start the container from repo root (see `README.docker.md`), then inside the container:
+
+```bash
+cd /repo
+
+terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
+  -state=states/e2e_tenant.tfstate \
+  -var="tenant_name=tenant1" \
+  -var="tenant_description=TF Get_fab test" \
+  -var="max_gpus_allowed=8" \
+  -var="prefer=respond-sync"
+
+terraform -chdir=/repo/examples/decoupled/05-available-servers apply -auto-approve \
+  -state=states/e2e_available_servers.tfstate \
+  -var="fabric_name=Get_fab"
+
+terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_servers.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=ADD" \
+  -var='servers=["hgx-su00-h00"]' \
+  -var="shared=true" \
+  -var="prefer=respond-sync"
+
+terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve \
+  -state=states/e2e_gpu_alloc.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=ADD" \
+  -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
+  -var="prefer=respond-sync"
+
+terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve \
+  -state=states/e2e_gpu_alloc.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=DELETE" \
+  -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
+  -var="prefer=respond-sync"
+
+terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
+  -state=states/e2e_tenant.tfstate \
+  -var="tenant_name=tenant1" \
+  -var="tenant_description=TF Get_fab test" \
+  -var="max_gpus_allowed=8" \
+  -var="prefer=respond-sync"
+```
+
+---
+
+## General notes
+
+- **Async / webhooks:** retained in variables for forward compatibility; **disabled in the current release**.
+- **Lock file:** if you rebuild the provider and `init` fails on checksums, delete that root’s `.terraform.lock.hcl` and re-run `init`.
+- **Tenant deletion:** deallocate servers (and per-GPU mappings if used) before destroy when the API requires an empty tenant.
+- **Fabric name:** must match the API exactly (case-sensitive).
+- **Lab license:** if PATCH/POST returns `403` for unlicensed devices, apply the FM DB license override for your fabric switch IPs before retrying.
+
+See also: `README.docker.md`, `README.make.md`.

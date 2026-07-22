@@ -1,0 +1,13 @@
+tenant_name = "tenant1"
+operation   = "ADD"
+
+# Matches:
+# POST /fabrics/{fabric}/tenants/{tenant}/gpuAllocations
+# { "operation":"ADD", "suid": { "0": { "su00-node00": { "gpus": ["G6","G7"] } } } }
+allocations = [
+  {
+    suid   = 0
+    server = "su00-node00"
+    gpus   = ["G6", "G7"]
+  }
+]
