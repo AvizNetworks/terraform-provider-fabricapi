@@ -180,6 +180,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 	return []func() resource.Resource{
 		NewTenantResource,
 		NewTenantServersResource,
+		NewGpuAllocationsResource,
 		NewVpcPeeringResource,
 		NewAuthLogoutResource,
 	}
@@ -188,5 +189,6 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 func (p *FabricAPIProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewTenantsDataSource,
+		NewAvailableServersDataSource,
 	}
 }

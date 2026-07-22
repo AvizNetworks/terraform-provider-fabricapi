@@ -4,14 +4,15 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
-	"errors"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,16 +29,16 @@ type APIClient struct {
 	// When RefreshToken is present, the client will refresh the access token once on 401 responses.
 	Token        string
 	RefreshToken string
-	Username string
-	Password string
-	InsecureTLS bool
+	Username     string
+	Password     string
+	InsecureTLS  bool
 
 	mu             sync.Mutex
 	loginAttempted bool
 }
 
 type requestOptions struct {
-	Prefer          string   // respond-sync | respond-async (underscore forms normalized in preferHeaderValue)
+	Prefer          string // respond-sync | respond-async (underscore forms normalized in preferHeaderValue)
 	WebhooksEnabled bool
 	WebhookURL      string
 	WebhookEvents   []string
@@ -679,10 +680,10 @@ type TenantRequest struct {
 // tenantName, description, maxGpusAllowed, shared (flat only).
 func tenantCreateAsyncFlatBody(t TenantRequest) map[string]any {
 	return map[string]any{
-		"tenantName":      t.TenantName,
-		"description":     t.Description,
-		"maxGpusAllowed":  t.MaxGpusAllowed,
-		"shared":          false,
+		"tenantName":     t.TenantName,
+		"description":    t.Description,
+		"maxGpusAllowed": t.MaxGpusAllowed,
+		"shared":         false,
 	}
 }
 
@@ -824,6 +825,18 @@ type VpcPeeringRequest struct {
 	Name        string `json:"name"`
 	VpcName     string `json:"vpcname"`
 	PeerVpcName string `json:"peervpcname"`
+}
+
+// DeviceGpus is the per-server GPU list in a gpuAllocations request.
+type DeviceGpus struct {
+	Gpus []string `json:"gpus"`
+}
+
+// GpuAllocationsRequest matches POST .../gpuAllocations (curl uses "operation").
+// suid is SU id (string key) → hostname → { gpus: ["G0", ...] }.
+type GpuAllocationsRequest struct {
+	Operation string                           `json:"operation"`
+	Suid      map[string]map[string]DeviceGpus `json:"suid"`
 }
 
 // CreateTenantWithFabric creates a tenant in the specified fabric
@@ -1251,6 +1264,41 @@ func (c *APIClient) GetFabrics(ctx context.Context) ([]FabricData, error) {
 	return raw.Fabrics, nil
 }
 
+// AvailableServersResponse matches GET /fabrics/{fabric}/available_servers.
+type AvailableServersResponse struct {
+	AvailableGPUs []string `json:"availableGPUs"`
+}
+
+// GetAvailableServers lists free GPU server hostnames for a fabric.
+func (c *APIClient) GetAvailableServers(ctx context.Context, fabricName string) ([]string, error) {
+	u := fmt.Sprintf(
+		"%s/fabrics/%s/available_servers",
+		strings.TrimRight(c.Endpoint, "/"),
+		url.PathEscape(fabricName),
+	)
+
+	var raw AvailableServersResponse
+	if err := c.doRequest(ctx, http.MethodGet, u, nil, &raw); err != nil {
+		return nil, err
+	}
+
+	out := make([]string, 0, len(raw.AvailableGPUs))
+	seen := make(map[string]struct{}, len(raw.AvailableGPUs))
+	for _, s := range raw.AvailableGPUs {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // CreateVpcPeering creates a VPC peering on the target fabric.
 func (c *APIClient) CreateVpcPeering(ctx context.Context, targetFabric string, req VpcPeeringRequest) error {
 	_, err := c.CreateVpcPeeringWithResponse(ctx, targetFabric, req)
@@ -1318,6 +1366,60 @@ func (c *APIClient) CreateVpcPeeringWithResponseAndOptions(
 	}
 
 	return bodyStr, "", nil
+}
+
+// CreateGpuAllocationsWithOptions POSTs /fabrics/{fabric}/tenants/{tenant}/gpuAllocations.
+// Body matches the FM curl contract: {"operation":"ADD|DELETE","suid":{...}} plus optional webhooks.
+// Returns operationID only for async (202) responses.
+func (c *APIClient) CreateGpuAllocationsWithOptions(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	reqBody GpuAllocationsRequest,
+	opts *requestOptions,
+) (string, error) {
+	u := fmt.Sprintf(
+		"%s/fabrics/%s/tenants/%s/gpuAllocations",
+		strings.TrimRight(c.Endpoint, "/"),
+		url.PathEscape(fabricName),
+		url.PathEscape(tenantName),
+	)
+
+	prefer := ""
+	if opts != nil {
+		prefer = opts.Prefer
+	}
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(prefer),
+	}
+
+	reqMap := map[string]any{
+		"operation": strings.ToUpper(strings.TrimSpace(reqBody.Operation)),
+		"suid":      reqBody.Suid,
+	}
+	if wh := maybeWebhookBody(opts); wh != nil {
+		for k, v := range wh {
+			reqMap[k] = v
+		}
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, reqMap, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	if status == http.StatusAccepted {
+		if opID, ok := extractOperationID(respBody); ok {
+			return opID, nil
+		}
+		return "", nil
+	}
+
+	if status != http.StatusOK && status != http.StatusNoContent && status != http.StatusCreated {
+		return "", fmt.Errorf("API returned status %d: %s", status, string(respBody))
+	}
+
+	return "", nil
 }
 
 func (c *APIClient) WaitForTenantReady(
