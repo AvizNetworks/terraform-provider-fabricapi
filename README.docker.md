@@ -122,6 +122,8 @@ Initialize each example root once:
 terraform -chdir=/repo/examples/decoupled/01-tenant init -upgrade
 terraform -chdir=/repo/examples/decoupled/02-servers init -upgrade
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering init -upgrade
+terraform -chdir=/repo/examples/decoupled/04-gpu-allocations init -upgrade
+terraform -chdir=/repo/examples/decoupled/05-available-servers init -upgrade
 ```
 
 ## End-to-end commands — inside the container
@@ -130,7 +132,7 @@ The following sections walk through a full end-to-end workflow. The examples use
 
 Note: Terraform may show a warning that `-state` is deprecated, but these commands are preserved to match the workflow.
 
-Example values such as **`fabric01`** (fabric), **`tenw01`** (tenant), and server names are illustrative—substitute your real names.
+Example values below use **`Get_fab`** (fabric), **`tenant1`** (tenant), and **`hgx-su00-h00`** (server)—substitute your real names from `GET /fabrics` and `05-available-servers` output.
 
 ### State directories (one-time)
 
@@ -142,36 +144,84 @@ Run these `mkdir` commands only the **first** time you use the provider with the
 mkdir -p /repo/examples/decoupled/01-tenant/states
 mkdir -p /repo/examples/decoupled/02-servers/states
 mkdir -p /repo/examples/decoupled/03-vpcpeering/states
+mkdir -p /repo/examples/decoupled/04-gpu-allocations/states
+mkdir -p /repo/examples/decoupled/05-available-servers/states
 ```
 
 ### How state files relate to tenants
 
-Each decoupled root uses **its own** `-state=...` file (`e2e_tenant.tfstate`, `e2e_servers.tfstate`, `e2e_vpc.tfstate`). They are not one combined Terraform state; together they describe **one tenant** if you keep names and paths aligned.
+Each decoupled root uses **its own** `-state=...` file. Together they describe **one tenant** when names and paths stay aligned.
 
-- **Same tenant, same workflow**: reuse those state paths and always pass the **same** `tenant_name` (and the same `tenant_fabric` on server commands) as in the tenant step. The servers state tracks allocations **for that tenant**—changing `tenant_name` while keeping the old servers state file will confuse Terraform unless you intentionally reset or replace state.
-- **A different tenant or a clean slate**: use **new** state filenames under `states/` (or new directories). Do not reuse the same `e2e_*.tfstate` files for another tenant; Terraform would still think the old resources belong to this configuration.
-- **VPC peering again**: if Terraform must stop tracking an existing peer (for example you used `delete_on_destroy=false` or you need a fresh apply), run **VPC peering state removal** below so the next `apply` is not blocked by stale state. Skipping that when you expect a new peering run can lead to errors or the wrong object being tracked.
+| Root | Typical state file | Notes |
+|------|-------------------|-------|
+| `01-tenant` | `e2e_tenant.tfstate` | Managed resource |
+| `02-servers` | `e2e_servers.tfstate` | Whole-server allocate/deallocate |
+| `04-gpu-allocations` | `e2e_gpu_alloc.tfstate` | Per-GPU ADD/DELETE |
+| `05-available-servers` | `e2e_available_servers.tfstate` | Read-only lookup; refreshed each apply |
+| `03-vpcpeering` | `e2e_vpc.tfstate` | VPC peering |
+
+- **Same tenant, same workflow**: reuse state paths and the same `tenant_name` / `tenant_fabric`.
+- **New tenant or clean slate**: use new state filenames under `states/`.
+- **Available servers**: no destroy or `state rm` needed — re-apply to refresh the list.
+- **VPC peering again**: see **VPC peering state removal** below if stale state blocks a new peering run.
 
 ### Tenant creation
 
 ```bash
 terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
   -state=states/e2e_tenant.tfstate \
-  -var="tenant_name=tenw01" \
+  -var="tenant_name=tenant1" \
+  -var="tenant_description=TF Get_fab test" \
   -var="max_gpus_allowed=8" \
   -var="prefer=respond-sync"
 ```
 
-### GPU allocation (ADD)
+### Available servers (lookup)
+
+Read-only data source — lists free GPU server hostnames. Run before whole-server allocate to pick a hostname. Same state file can be reused; each apply refreshes the list.
+
+```bash
+terraform -chdir=/repo/examples/decoupled/05-available-servers apply -auto-approve \
+  -state=states/e2e_available_servers.tfstate \
+  -var="fabric_name=Get_fab"
+```
+
+### GPU allocation — whole server (ADD)
 
 ```bash
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
-  -var="tenant_fabric=fabric01" \
-  -var="tenant_name=tenw01" \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
   -var="operation=ADD" \
   -var='servers=["hgx-su00-h00"]' \
-  -var="shared=false" \
+  -var="shared=true" \
+  -var="prefer=respond-sync"
+```
+
+### Per-GPU allocation (ADD)
+
+Requires server attached in the previous step. Externally managed fabrics only.
+
+```bash
+terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve \
+  -state=states/e2e_gpu_alloc.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=ADD" \
+  -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
+  -var="prefer=respond-sync"
+```
+
+### Per-GPU deallocation (DELETE)
+
+```bash
+terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve \
+  -state=states/e2e_gpu_alloc.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=DELETE" \
+  -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
   -var="prefer=respond-sync"
 ```
 
@@ -180,21 +230,20 @@ terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
 ```bash
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering apply -auto-approve \
   -state=states/e2e_vpc.tfstate \
-  -var="tenant_name=tenw01" \
-  -var="vpcpeering_name=tenw01-peer" \
+  -var="tenant_name=tenant1" \
+  -var="vpcpeering_name=tf-vpcpeering-tenant1" \
   -var="delete_on_destroy=false"
 ```
 
-### GPU deallocation (DELETE)
+### GPU deallocation — whole server (DELETE)
 
 ```bash
 terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -state=states/e2e_servers.tfstate \
-  -var="tenant_fabric=fabric01" \
-  -var="tenant_name=tenw01" \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
   -var="operation=DELETE" \
   -var='servers=["hgx-su00-h00"]' \
-  -var="shared=false" \
   -var="prefer=respond-sync"
 ```
 
@@ -205,7 +254,9 @@ Tip: To deallocate all servers for a tenant, use an empty list: `-var='servers=[
 ```bash
 terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
   -state=states/e2e_tenant.tfstate \
-  -var="tenant_name=tenw01" \
+  -var="tenant_name=tenant1" \
+  -var="tenant_description=TF Get_fab test" \
+  -var="max_gpus_allowed=8" \
   -var="prefer=respond-sync"
 ```
 
@@ -230,9 +281,13 @@ terraform -chdir=/repo/examples/decoupled/03-vpcpeering state rm \
 rm -f /repo/examples/decoupled/01-tenant/.terraform.lock.hcl
 rm -f /repo/examples/decoupled/02-servers/.terraform.lock.hcl
 rm -f /repo/examples/decoupled/03-vpcpeering/.terraform.lock.hcl
+rm -f /repo/examples/decoupled/04-gpu-allocations/.terraform.lock.hcl
+rm -f /repo/examples/decoupled/05-available-servers/.terraform.lock.hcl
 
 terraform -chdir=/repo/examples/decoupled/01-tenant init -upgrade
 terraform -chdir=/repo/examples/decoupled/02-servers init -upgrade
 terraform -chdir=/repo/examples/decoupled/03-vpcpeering init -upgrade
+terraform -chdir=/repo/examples/decoupled/04-gpu-allocations init -upgrade
+terraform -chdir=/repo/examples/decoupled/05-available-servers init -upgrade
 ```
 

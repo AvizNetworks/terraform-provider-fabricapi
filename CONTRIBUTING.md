@@ -60,6 +60,8 @@ The recommended workflow is the decoupled examples:
 - `examples/decoupled/01-tenant`
 - `examples/decoupled/02-servers`
 - `examples/decoupled/03-vpcpeering`
+- `examples/decoupled/04-gpu-allocations`
+- `examples/decoupled/05-available-servers`
 
 Set required environment variables for connectivity/auth (see user READMEs), then:
 
