@@ -16,12 +16,14 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Tenants** (`fabricapi_tenant`): create/read/delete
 - **Tenant servers** (`fabricapi_tenant_servers`): allocate/deallocate whole GPU servers (PATCH tenant)
 - **Per-GPU allocations** (`fabricapi_gpu_allocations`): map/unmap logical GPUs (G0–G7) on servers already attached to a tenant (POST `.../gpuAllocations`)
+- **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
 
 ### Data sources
 
 - **Tenants** (`fabricapi_tenants`): list tenant names for a fabric
 - **Available servers** (`fabricapi_available_servers`): list free GPU server hostnames (GET `.../available_servers`)
+- **VF interfaces** (`fabricapi_vf_interfaces`): list HBN VF interfaces for a GPU server (GET `.../vf-interfaces`)
 
 ## Examples (copy/paste friendly)
 
@@ -31,6 +33,9 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
   - `03-vpcpeering`: VPC peering
   - `04-gpu-allocations`: per-GPU allocation/deallocation on shared servers
   - `05-available-servers`: lookup free servers before allocate (read-only)
+  - `06-vf-interfaces`: lookup HBN VF interfaces on a server (read-only)
+  - `07-vf-assign`: bind/unbind a VF to a tenant VLAN
+
 - **State files**: each root keeps its own state; use one consistent `tenant_name` across those commands for the same tenant, new state filenames for a different tenant, and follow the guides for VPC peering cleanup. See **How state files relate to tenants** in `README.docker.md` or `README.make.md`.
 
 Start here for exact commands: `examples/decoupled/README.md`.

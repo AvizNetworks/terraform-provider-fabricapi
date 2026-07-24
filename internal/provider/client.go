@@ -1299,6 +1299,163 @@ func (c *APIClient) GetAvailableServers(ctx context.Context, fabricName string) 
 	return out, nil
 }
 
+// VfInterfacesResponse matches GET /fabrics/{fabric}/servers/{server}/vf-interfaces.
+type VfInterfacesResponse struct {
+	ServerName string        `json:"serverName"`
+	FabricName string        `json:"fabricName"`
+	DpuCount   int           `json:"dpuCount"`
+	Dpus       []VfDpuEntry  `json:"dpus"`
+}
+
+// VfDpuEntry is one DPU and its VF interfaces on a GPU server.
+type VfDpuEntry struct {
+	DpuName      string         `json:"dpuName"`
+	VfInterfaces []VfInterface  `json:"vfInterfaces"`
+}
+
+// VfInterface is a single VF row (DPU if_name and/or host server_if).
+type VfInterface struct {
+	IfName     string `json:"ifName"`
+	ServerIf   string `json:"serverIf"`
+	Status     string `json:"status"`
+	TenantName string `json:"tenantName,omitempty"`
+}
+
+// VfAssignRequest matches POST/DELETE .../vf-interfaces/{vfId}/assign body.
+type VfAssignRequest struct {
+	TenantName string `json:"tenantName"`
+}
+
+// VfAssignResponse matches POST .../vf-interfaces/{vfId}/assign success body.
+type VfAssignResponse struct {
+	VfID          string `json:"vfId"`
+	ServerName    string `json:"serverName"`
+	FabricName    string `json:"fabricName"`
+	TenantName    string `json:"tenantName"`
+	Status        string `json:"status"`
+	VlanID        *int   `json:"vlanId"`
+	VniID         *int   `json:"vniId"`
+	ProvisionedAt string `json:"provisionedAt"`
+}
+
+// GetVfInterfaces lists VF interfaces for a GPU server (HBN / DPU offload fabrics).
+func (c *APIClient) GetVfInterfaces(ctx context.Context, fabricName, serverName string) (*VfInterfacesResponse, error) {
+	fabricName = strings.TrimSpace(fabricName)
+	serverName = strings.TrimSpace(serverName)
+	if fabricName == "" {
+		return nil, fmt.Errorf("fabric name is required")
+	}
+	if serverName == "" {
+		return nil, fmt.Errorf("server name is required")
+	}
+
+	u := fmt.Sprintf(
+		"%s/fabrics/%s/servers/%s/vf-interfaces",
+		strings.TrimRight(c.Endpoint, "/"),
+		url.PathEscape(fabricName),
+		url.PathEscape(serverName),
+	)
+
+	var raw VfInterfacesResponse
+	if err := c.doRequest(ctx, http.MethodGet, u, nil, &raw); err != nil {
+		return nil, err
+	}
+	return &raw, nil
+}
+
+// FindVfInterface locates a VF by path id (DPU if_name or host server_if) within a list response.
+func FindVfInterface(resp *VfInterfacesResponse, vfID string) (dpuName string, vf VfInterface, ok bool) {
+	vfID = strings.TrimSpace(vfID)
+	if resp == nil || vfID == "" {
+		return "", VfInterface{}, false
+	}
+	for _, dpu := range resp.Dpus {
+		for _, entry := range dpu.VfInterfaces {
+			if strings.EqualFold(strings.TrimSpace(entry.IfName), vfID) ||
+				strings.EqualFold(strings.TrimSpace(entry.ServerIf), vfID) {
+				return dpu.DpuName, entry, true
+			}
+		}
+	}
+	return "", VfInterface{}, false
+}
+
+// AssignVf binds a VF interface to a tenant VLAN (POST .../vf-interfaces/{vfId}/assign).
+// prefer may be empty (defaults to respond-sync).
+func (c *APIClient) AssignVf(ctx context.Context, fabricName, serverName, vfID, tenantName, prefer string) (*VfAssignResponse, error) {
+	fabricName = strings.TrimSpace(fabricName)
+	serverName = strings.TrimSpace(serverName)
+	vfID = strings.TrimSpace(vfID)
+	tenantName = strings.TrimSpace(tenantName)
+	if fabricName == "" || serverName == "" || vfID == "" || tenantName == "" {
+		return nil, fmt.Errorf("fabric, server, vf id, and tenant name are required")
+	}
+
+	u := fmt.Sprintf(
+		"%s/fabrics/%s/servers/%s/vf-interfaces/%s/assign",
+		strings.TrimRight(c.Endpoint, "/"),
+		url.PathEscape(fabricName),
+		url.PathEscape(serverName),
+		url.PathEscape(vfID),
+	)
+
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(prefer),
+	}
+	body := VfAssignRequest{TenantName: tenantName}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, body, 60*time.Minute, headers)
+	if err != nil {
+		return nil, err
+	}
+	if status < 200 || status >= 300 {
+		return nil, fmt.Errorf("API returned %d: %s", status, strings.TrimSpace(string(respBody)))
+	}
+
+	var out VfAssignResponse
+	if len(respBody) > 0 {
+		if err := json.Unmarshal(respBody, &out); err != nil {
+			return nil, fmt.Errorf("decode assign response: %w (body=%s)", err, strings.TrimSpace(string(respBody)))
+		}
+	}
+	return &out, nil
+}
+
+// UnassignVf unbinds a VF from its tenant VLAN (DELETE .../vf-interfaces/{vfId}/assign).
+// The request body includes tenantName to match the documented Fabric API sample.
+// prefer may be empty (defaults to respond-sync).
+func (c *APIClient) UnassignVf(ctx context.Context, fabricName, serverName, vfID, tenantName, prefer string) error {
+	fabricName = strings.TrimSpace(fabricName)
+	serverName = strings.TrimSpace(serverName)
+	vfID = strings.TrimSpace(vfID)
+	tenantName = strings.TrimSpace(tenantName)
+	if fabricName == "" || serverName == "" || vfID == "" || tenantName == "" {
+		return fmt.Errorf("fabric, server, vf id, and tenant name are required")
+	}
+
+	u := fmt.Sprintf(
+		"%s/fabrics/%s/servers/%s/vf-interfaces/%s/assign",
+		strings.TrimRight(c.Endpoint, "/"),
+		url.PathEscape(fabricName),
+		url.PathEscape(serverName),
+		url.PathEscape(vfID),
+	)
+
+	headers := map[string]string{
+		"Prefer": preferHeaderValue(prefer),
+	}
+	body := VfAssignRequest{TenantName: tenantName}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodDelete, u, body, 60*time.Minute, headers)
+	if err != nil {
+		return err
+	}
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("API returned %d: %s", status, strings.TrimSpace(string(respBody)))
+	}
+	return nil
+}
+
 // CreateVpcPeering creates a VPC peering on the target fabric.
 func (c *APIClient) CreateVpcPeering(ctx context.Context, targetFabric string, req VpcPeeringRequest) error {
 	_, err := c.CreateVpcPeeringWithResponse(ctx, targetFabric, req)

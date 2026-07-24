@@ -62,6 +62,8 @@ The recommended workflow is the decoupled examples:
 - `examples/decoupled/03-vpcpeering`
 - `examples/decoupled/04-gpu-allocations`
 - `examples/decoupled/05-available-servers`
+- `examples/decoupled/06-vf-interfaces`
+- `examples/decoupled/07-vf-assign`
 
 Set required environment variables for connectivity/auth (see user READMEs), then:
 

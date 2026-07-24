@@ -1,0 +1,6 @@
+# Example values — replace with your fabric / server / tenant / vf.
+fabric_name = ""
+server_name = "hgx-su00-h01"
+vf_id       = "vf4"
+tenant_name = "Blue"
+prefer      = "respond-sync"
