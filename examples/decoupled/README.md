@@ -18,10 +18,13 @@ For each operation, pass inputs via `-var` (or a `*.tfvars` file).
 | 2 | `05-available-servers` | **Data source** | GET `.../available_servers` | Optional; lists free hostnames |
 | 3 | `02-servers` | Resource | PATCH tenant (ADD/DELETE servers) | Attach whole server(s) to tenant |
 | 4 | `04-gpu-allocations` | Resource | POST `.../gpuAllocations` | Per-GPU slices (e.g. G6, G7) on attached servers |
-| 5 | `03-vpcpeering` | Resource | POST vpcpeering | Optional; after tenant networking is ready |
+| 5 | `06-vf-interfaces` | **Data source** | GET `.../vf-interfaces` | HBN only; list free/provisioned VFs |
+| 6 | `07-vf-assign` | Resource | POST/DELETE `.../vf-interfaces/{vfId}/assign` | HBN only; bind/unbind VF to tenant VLAN |
+| 7 | `03-vpcpeering` | Resource | POST vpcpeering | Optional; after tenant networking is ready |
 
 **Deallocate / cleanup (reverse order where applicable):**
 
+- VF: `07-vf-assign` `destroy` (DELETE assign with `tenantName` body)
 - Per-GPU: `04-gpu-allocations` with `operation=DELETE`
 - Whole server: `02-servers` with `operation=DELETE`
 - Tenant: `01-tenant` `destroy`
@@ -36,6 +39,8 @@ Each root keeps **its own** state file. Reuse the same `-state=...` path when co
 | `02-servers` | `states/e2e_servers.tfstate` | Resource — `operation=DELETE` to deallocate |
 | `04-gpu-allocations` | `states/e2e_gpu_alloc.tfstate` | Resource — `operation=DELETE` to deallocate GPUs |
 | `05-available-servers` | `states/e2e_available_servers.tfstate` | **Data source only** — refreshed each apply; no destroy needed |
+| `06-vf-interfaces` | `states/e2e_vf_interfaces.tfstate` | **Data source only** — refreshed each apply; no destroy needed |
+| `07-vf-assign` | `states/e2e_vf_assign.tfstate` | Resource — destroy to unbind VF |
 | `03-vpcpeering` | `states/e2e_vpc.tfstate` | Resource — see VPC peering notes in Docker/Make README |
 
 Use a **new state filename** when starting a different tenant or a clean run.
@@ -56,18 +61,24 @@ mkdir -p examples/decoupled/02-servers/states
 mkdir -p examples/decoupled/03-vpcpeering/states
 mkdir -p examples/decoupled/04-gpu-allocations/states
 mkdir -p examples/decoupled/05-available-servers/states
+mkdir -p examples/decoupled/06-vf-interfaces/states
+mkdir -p examples/decoupled/07-vf-assign/states
 
 rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
 rm -f examples/decoupled/02-servers/.terraform.lock.hcl
 rm -f examples/decoupled/03-vpcpeering/.terraform.lock.hcl
 rm -f examples/decoupled/04-gpu-allocations/.terraform.lock.hcl
 rm -f examples/decoupled/05-available-servers/.terraform.lock.hcl
+rm -f examples/decoupled/06-vf-interfaces/.terraform.lock.hcl
+rm -f examples/decoupled/07-vf-assign/.terraform.lock.hcl
 
 terraform -chdir=examples/decoupled/01-tenant init -upgrade
 terraform -chdir=examples/decoupled/02-servers init -upgrade
 terraform -chdir=examples/decoupled/03-vpcpeering init -upgrade
 terraform -chdir=examples/decoupled/04-gpu-allocations init -upgrade
 terraform -chdir=examples/decoupled/05-available-servers init -upgrade
+terraform -chdir=examples/decoupled/06-vf-interfaces init -upgrade
+terraform -chdir=examples/decoupled/07-vf-assign init -upgrade
 ```
 
 **Fabric name is case-sensitive** — use the exact name from `GET /fabrics` (e.g. `Get_fab`, not `get_fab`).
@@ -113,6 +124,7 @@ Read-only `fabricapi_available_servers` data source — GET `/fabrics/{fabric}/a
 - Output: `available_gpus` (server hostnames currently free).
 - **Same state file can be reused forever** — each `apply` refreshes the list from the API.
 - No `destroy` or `terraform state rm` needed for normal use.
+- Use before `02-servers` (and before HBN VF flows) to pick a real hostname.
 
 ### Sample commands
 
@@ -122,7 +134,7 @@ terraform -chdir=examples/decoupled/05-available-servers apply -auto-approve \
   -var="fabric_name=Get_fab"
 ```
 
-Use a hostname from the `available_gpus` output in step 02 (example below uses `hgx-su00-h00`).
+Use a hostname from the `available_gpus` output in step `02` (example below uses `hgx-su00-h00`).
 
 ---
 
@@ -238,7 +250,9 @@ Fabric is taken from `FABRIC_NAME` / provider `fabric` (set `Get_fab` in env bef
 
 ## Docker workflow (same commands, `/repo` paths)
 
-Start the container from repo root (see `README.docker.md`), then inside the container:
+Start the container from repo root (see `README.docker.md`), then inside the container.
+
+### External / shared GPU fabric (available servers + per-GPU)
 
 ```bash
 cd /repo
@@ -250,6 +264,7 @@ terraform -chdir=/repo/examples/decoupled/01-tenant apply -auto-approve \
   -var="max_gpus_allowed=8" \
   -var="prefer=respond-sync"
 
+# Lookup free servers (GET available_servers) — no destroy needed
 terraform -chdir=/repo/examples/decoupled/05-available-servers apply -auto-approve \
   -state=states/e2e_available_servers.tfstate \
   -var="fabric_name=Get_fab"
@@ -263,6 +278,7 @@ terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
   -var="shared=true" \
   -var="prefer=respond-sync"
 
+# Per-GPU ADD (externally managed fabrics only)
 terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve \
   -state=states/e2e_gpu_alloc.tfstate \
   -var="tenant_fabric=Get_fab" \
@@ -271,12 +287,21 @@ terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve
   -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
   -var="prefer=respond-sync"
 
+# Per-GPU DELETE
 terraform -chdir=/repo/examples/decoupled/04-gpu-allocations apply -auto-approve \
   -state=states/e2e_gpu_alloc.tfstate \
   -var="tenant_fabric=Get_fab" \
   -var="tenant_name=tenant1" \
   -var="operation=DELETE" \
   -var='allocations=[{suid=0,server="hgx-su00-h00",gpus=["G6","G7"]}]' \
+  -var="prefer=respond-sync"
+
+terraform -chdir=/repo/examples/decoupled/02-servers apply -auto-approve \
+  -state=states/e2e_servers.tfstate \
+  -var="tenant_fabric=Get_fab" \
+  -var="tenant_name=tenant1" \
+  -var="operation=DELETE" \
+  -var='servers=["hgx-su00-h00"]' \
   -var="prefer=respond-sync"
 
 terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
@@ -287,14 +312,113 @@ terraform -chdir=/repo/examples/decoupled/01-tenant destroy -auto-approve \
   -var="prefer=respond-sync"
 ```
 
+### HBN fabric (VF list + assign / unbind)
+
+Requires tenant + server attached first (same `01` / `02` pattern; use your HBN fabric name).
+
+```bash
+cd /repo
+
+# Lookup VFs (GET vf-interfaces) — no destroy needed
+terraform -chdir=/repo/examples/decoupled/06-vf-interfaces apply -auto-approve \
+  -state=states/e2e_vf_interfaces.tfstate \
+  -var="fabric_name=HBN_test_16" \
+  -var="server_name=hgx-su00-h01"
+
+# Bind VF (POST .../assign with tenantName)
+terraform -chdir=/repo/examples/decoupled/07-vf-assign apply -auto-approve \
+  -state=states/e2e_vf_assign.tfstate \
+  -var="fabric_name=HBN_test_16" \
+  -var="server_name=hgx-su00-h01" \
+  -var="vf_id=vf4" \
+  -var="tenant_name=Blue" \
+  -var="prefer=respond-sync"
+
+# Unbind VF (DELETE .../assign with tenantName)
+terraform -chdir=/repo/examples/decoupled/07-vf-assign destroy -auto-approve \
+  -state=states/e2e_vf_assign.tfstate \
+  -var="fabric_name=HBN_test_16" \
+  -var="server_name=hgx-su00-h01" \
+  -var="vf_id=vf4" \
+  -var="tenant_name=Blue" \
+  -var="prefer=respond-sync"
+```
+
+---
+
+## 06 - VF interfaces (HBN lookup)
+
+Read-only `fabricapi_vf_interfaces` data source — GET `/fabrics/{fabric}/servers/{server}/vf-interfaces`.
+
+- Lists DPU VF interfaces (`if_name`, `server_if`, `status`, `tenant_name`).
+- Same pattern as `05-available-servers`: refresh by re-applying; no destroy needed.
+- Pick a VF with `status=free` before `07-vf-assign`.
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/06-vf-interfaces apply -auto-approve \
+  -state=states/e2e_vf_interfaces.tfstate \
+  -var="fabric_name=HBN_test_16" \
+  -var="server_name=hgx-su00-h01"
+```
+
+---
+
+## 07 - VF assign / unbind (HBN)
+
+Manages `fabricapi_vf_assign` — POST/DELETE `/fabrics/{fabric}/servers/{server}/vf-interfaces/{vfId}/assign`.
+
+**Request body (assign and unbind):**
+
+```json
+{ "tenantName": "Blue" }
+```
+
+Terraform always sends `tenant_name` on create and destroy so the call matches the documented API sample.
+
+**Prerequisites:**
+
+1. Tenant exists (`01-tenant`).
+2. Server is attached to the tenant (`02-servers` ADD).
+3. Fabric is DPU/HBN offload (server has VF interfaces).
+4. VF is free (`06-vf-interfaces`).
+
+### Sample commands — assign (apply)
+
+```bash
+terraform -chdir=examples/decoupled/07-vf-assign apply -auto-approve \
+  -state=states/e2e_vf_assign.tfstate \
+  -var="fabric_name=HBN_test_16" \
+  -var="server_name=hgx-su00-h01" \
+  -var="vf_id=vf4" \
+  -var="tenant_name=Blue" \
+  -var="prefer=respond-sync"
+```
+
+### Sample commands — unbind (destroy)
+
+```bash
+terraform -chdir=examples/decoupled/07-vf-assign destroy -auto-approve \
+  -state=states/e2e_vf_assign.tfstate \
+  -var="fabric_name=HBN_test_16" \
+  -var="server_name=hgx-su00-h01" \
+  -var="vf_id=vf4" \
+  -var="tenant_name=Blue" \
+  -var="prefer=respond-sync"
+```
+
 ---
 
 ## General notes
 
 - **Async / webhooks:** retained in variables for forward compatibility; **disabled in the current release**.
 - **Lock file:** if you rebuild the provider and `init` fails on checksums, delete that root’s `.terraform.lock.hcl` and re-run `init`.
-- **Tenant deletion:** deallocate servers (and per-GPU mappings if used) before destroy when the API requires an empty tenant.
+- **Tenant deletion:** deallocate VFs, servers (and per-GPU mappings if used) before destroy when the API requires an empty tenant.
 - **Fabric name:** must match the API exactly (case-sensitive).
+- **Available servers:** read-only lookup (`05`); re-apply to refresh — no destroy.
+- **Per-GPU (`04`):** externally managed fabrics only; `operation=DELETE` keeps state; destroy removes Terraform management.
+- **HBN VF unbind:** destroy sends `{"tenantName":"..."}` like the sample curl; also refuses destroy if GET shows the VF bound to a different tenant.
 - **Lab license:** if PATCH/POST returns `403` for unlicensed devices, apply the FM DB license override for your fabric switch IPs before retrying.
 
 See also: `README.docker.md`, `README.make.md`.
