@@ -1417,11 +1417,14 @@ func ServersForDeallocation(t *TenantResponse, fallback []string) []string {
 	return nil
 }
 
-// hasUnreportedAllocation reports whether the tenant has any GPU allocation at all. It must check
-// every counter, not just gpusAllocated: on NS+EW fabrics a /gpus (UFM) allocation shows only in
-// ufmAllocatedPorts and leaves gpusAllocated at 0, so checking gpusAllocated alone would miss it
-// and make tenant_gpus Delete/Update skip a release it actually needs (leaking the allocation).
-// gpusAllocated covers the /tenants (NS) side; the ufm/nmxc counters cover the /gpus (EW) side.
+// hasUnreportedAllocation reports whether the tenant has any GPU allocation at all. Checking
+// gpusAllocated alone is not enough: on NS+EW fabrics a /gpus (UFM) allocation shows only in
+// ufmAllocatedPorts and leaves gpusAllocated at 0, so tenant_gpus Delete/Update would miss it and
+// skip a release it needs (leaking the allocation). gpusAllocated covers the /tenants (NS) side;
+// the ufm/nmxc port/gpu counters cover the /gpus (EW) side. The server counters
+// (ufmAllocatedServers/nmxcServersAllocated) are intentionally not checked - they always move in
+// lockstep with their port/gpu counters (an allocated server implies allocated ports), so those
+// already cover every real allocation.
 func hasUnreportedAllocation(t *TenantResponse) bool {
 	if t == nil {
 		return false

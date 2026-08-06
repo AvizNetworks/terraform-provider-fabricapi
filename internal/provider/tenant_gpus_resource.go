@@ -291,7 +291,7 @@ func (r *TenantGpusResource) Create(ctx context.Context, req resource.CreateRequ
 		}
 
 		if err := r.client.UnassignPorts(ctx, fabricName, tenantName, serverNames, gpuIds, membership); err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to assign tenant GPU ports: %s", err))
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to remove tenant GPU ports: %s", err))
 			return
 		}
 	}
@@ -487,8 +487,10 @@ func (r *TenantGpusResource) Delete(ctx context.Context, req resource.DeleteRequ
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to release tenant GPU ports: %s", err))
 		return
 	}
+
+	resp.State.RemoveResource(ctx)
 }
 
-func stableTenantGpusID(fabricName, tenantName, operation string, serverNames []string) string {
-	return fmt.Sprintf("%s:%s:%s:%s", fabricName, tenantName, operation, strings.Join(serverNames, ","))
+func stableTenantGpusID(fabricName, tenantName,_ string , serverNames []string) string {
+	return fmt.Sprintf("%s:%s:%s", fabricName, tenantName, strings.Join(serverNames, ","))
 }

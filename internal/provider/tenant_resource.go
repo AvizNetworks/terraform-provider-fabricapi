@@ -487,7 +487,9 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 			}
 		}
 	} else {
-		// Async+webhook: not blocking on a read, so these will be unknown until the next Read.
+		// Async+webhook: we don't block on a read here, so there are no real UFM/NMXC values yet.
+		// They can't be left Unknown (post-apply state must be known), so set empty/zero
+		// placeholders now; the next Read reconciles them to the real backend values.
 		resp.Diagnostics.Append(setUFMNMXCFields(ctx, &data, &TenantResponse{})...)
 		if resp.Diagnostics.HasError() {
 			return
