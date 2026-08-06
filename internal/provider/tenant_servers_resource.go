@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -228,8 +229,12 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 	// - servers=[] means "deallocate all currently allocated servers"
 	// - servers=[x] means "deallocate x", and error if x isn't currently allocated
 	if operation == "DELETE" {
-		currentServers := normalizedServersFromTenant(tenantInfo)
 		deleteList := normalizeServerList(servers)
+		// deleteList is the fallback since this is a brand-new resource: no prior state exists yet.
+		currentServers := normalizedServersFromTenant(tenantInfo, deleteList)
+		if !errorIfAllocationUnresolved(&resp.Diagnostics, tenantInfo, currentServers, tenantName) {
+			return
+		}
 		if len(deleteList) == 0 {
 			deleteList = currentServers
 		} else {
@@ -353,7 +358,7 @@ func (r *TenantServersResource) Create(ctx context.Context, req resource.CreateR
 			return
 		}
 
-		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed, servers))
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -419,7 +424,11 @@ func (r *TenantServersResource) Read(ctx context.Context, req resource.ReadReque
 		return
 	}
 
-	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(tenantInfo))
+	// Fallback to what's already in state: allotedGpus is empty on EW-IBOnly fabrics.
+	var priorServers []string
+	_ = data.Servers.ElementsAs(ctx, &priorServers, false)
+
+	serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(tenantInfo, priorServers))
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -464,7 +473,10 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 		return
 	}
 	desiredServers = normalizeServerList(desiredServers)
-	currentServers := normalizedServersFromTenant(tenantInfo)
+	// Fallback to what's already in state: allotedGpus is empty on EW-IBOnly fabrics.
+	var priorServers []string
+	_ = state.Servers.ElementsAs(ctx, &priorServers, false)
+	currentServers := normalizedServersFromTenant(tenantInfo, priorServers)
 
 	operation := plan.Operation.ValueString()
 	operation = strings.ToUpper(strings.TrimSpace(operation))
@@ -478,6 +490,9 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 	var toAdd, toDelete []string
 	if operation == "DELETE" {
 		if len(desiredServers) == 0 {
+			if !errorIfAllocationUnresolved(&resp.Diagnostics, tenantInfo, currentServers, tenantName) {
+				return
+			}
 			toDelete = currentServers
 		} else {
 			curSet := make(map[string]struct{}, len(currentServers))
@@ -541,7 +556,15 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			}
 		}
 
-		opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toDelete, nil, &requestOptions{
+		// Release with the same shared value used to allocate (see Delete): shared=true servers
+		// must be DELETEd with shared:true so FM skips the E-W whole-server dealloc.
+		var delShared *bool
+		if !plan.Shared.IsNull() && !plan.Shared.IsUnknown() {
+			v := plan.Shared.ValueBool()
+			delShared = &v
+		}
+
+		opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toDelete, delShared, &requestOptions{
 			Prefer:          prefer,
 			WebhooksEnabled: webhooksEnabled,
 			WebhookURL:      webhookURL,
@@ -674,7 +697,7 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			return
 		}
 
-		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed))
+		serverList, diags := types.ListValueFrom(ctx, types.StringType, normalizedServersFromTenant(refreshed, desiredServers))
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -759,7 +782,14 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		return
 	}
 
-	toFree := normalizedServersFromTenant(tenantInfo)
+	// Fallback to what's already in state: allotedGpus is empty on EW-IBOnly fabrics.
+	var priorServers []string
+	_ = data.Servers.ElementsAs(ctx, &priorServers, false)
+
+	toFree := normalizedServersFromTenant(tenantInfo, priorServers)
+	if !errorIfAllocationUnresolved(&resp.Diagnostics, tenantInfo, toFree, tenantName) {
+		return
+	}
 	if len(toFree) == 0 {
 		resp.State.RemoveResource(ctx)
 		return
@@ -775,6 +805,13 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 			"Async operations are currently disabled for this release. Use prefer=respond-sync (default).",
 		)
 		return
+	}
+	// Release with the same shared value used to allocate: a shared=true server must be DELETEd
+	// with shared:true so FM skips the E-W whole-server dealloc (else GPU_NOT_ALLOCATED).
+	var shared *bool
+	if !data.Shared.IsNull() && !data.Shared.IsUnknown() {
+		v := data.Shared.ValueBool()
+		shared = &v
 	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
@@ -801,7 +838,7 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		}
 	}
 
-	opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toFree, nil, &requestOptions{
+	opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toFree, shared, &requestOptions{
 		Prefer:          prefer,
 		WebhooksEnabled: webhooksEnabled,
 		WebhookURL:      webhookURL,
@@ -851,8 +888,27 @@ func normalizeServerList(in []string) []string {
 	return out
 }
 
-func normalizedServersFromTenant(t *TenantResponse) []string {
-	return normalizeServerList(ServersForDeallocation(t))
+// normalizedServersFromTenant is ServersForDeallocation with the result sorted and deduplicated.
+func normalizedServersFromTenant(t *TenantResponse, fallback []string) []string {
+	return normalizeServerList(ServersForDeallocation(t, fallback))
+}
+
+// errorIfAllocationUnresolved adds a diagnostic and returns false when the tenant genuinely has
+// GPUs allocated but resolved (from normalizedServersFromTenant) came back empty - meaning nothing,
+// live API data or fallback, can say which servers. Silently treating that as "nothing to do"
+// would leak the real allocation.
+func errorIfAllocationUnresolved(diags *diag.Diagnostics, tenantInfo *TenantResponse, resolved []string, tenantName string) bool {
+	if len(resolved) > 0 || !hasUnreportedAllocation(tenantInfo) {
+		return true
+	}
+	diags.AddError(
+		"Cannot determine current servers",
+		fmt.Sprintf(
+			"Tenant %q has GPUs allocated, but no server names could be determined. Specify them explicitly in `servers` instead of an empty list.",
+			tenantName,
+		),
+	)
+	return false
 }
 
 func diffServers(current, desired []string) (toAdd, toDelete []string) {
