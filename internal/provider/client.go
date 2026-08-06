@@ -1027,6 +1027,7 @@ func (c *APIClient) GetTenantWithFabric(fabricName string, tenantName string) (*
 		Description:    apiResponse.Tenant.Description,
 		MaxGpusAllowed: apiResponse.Tenant.MaxGpusAllowed,
 		GpusAllocated:  apiResponse.Tenant.GpusAllocated,
+		AllotedGpus:    apiResponse.Tenant.AllotedGpus,
 		VnetsName:      apiResponse.Tenant.Vnets.Name,
 
 		PKeyValue:           apiResponse.Tenant.PKeyValue,
@@ -1389,11 +1390,11 @@ func (c *APIClient) InventorySync(ctx context.Context, fabricName string) (*Inve
 	return &parsed, nil
 }
 
-// ResolveTenantServers returns the tenant's currently-allocated servers: from GET tenant when the
+// ServersForDeallocation returns the tenant's currently-allocated servers: from GET tenant when the
 // API reports them, otherwise fallback. Used for reconciliation generally (ADD, DELETE, and diffing
 // alike), not just deallocation. allotedGpus is always empty on EW-IBOnly fabrics even when GPUs
 // are really allocated, so fallback keeps that case from looking like "nothing allocated".
-func ResolveTenantServers(t *TenantResponse, fallback []string) []string {
+func ServersForDeallocation(t *TenantResponse, fallback []string) []string {
 	if t == nil {
 		return nil
 	}
@@ -1416,14 +1417,18 @@ func ResolveTenantServers(t *TenantResponse, fallback []string) []string {
 	return nil
 }
 
-// hasUnreportedAllocation reports a real GPU allocation that allotedGpus/Servers missed - always
-// true on EW-IBOnly fabrics, where allotedGpus is empty regardless. gpusAllocated alone is
-// reliable here on every fabric type.
+// hasUnreportedAllocation reports whether the tenant has any GPU allocation at all. It must check
+// every counter, not just gpusAllocated: on NS+EW fabrics a /gpus (UFM) allocation shows only in
+// ufmAllocatedPorts and leaves gpusAllocated at 0, so checking gpusAllocated alone would miss it
+// and make tenant_gpus Delete/Update skip a release it actually needs (leaking the allocation).
+// gpusAllocated covers the /tenants (NS) side; the ufm/nmxc counters cover the /gpus (EW) side.
 func hasUnreportedAllocation(t *TenantResponse) bool {
 	if t == nil {
 		return false
 	}
-	return t.GpusAllocated > 0
+	return t.GpusAllocated > 0 ||
+		t.UFMAllocatedPorts > 0 ||
+		t.NMXCGpusAllocated > 0
 }
 
 func (c *APIClient) GetAllocatedServers(ctx context.Context, fabric string) (map[string]string, error) {

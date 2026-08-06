@@ -185,6 +185,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewTenantGpusResource,
 		NewVpcPeeringResource,
 		NewAuthLogoutResource,
+		NewInventorySyncResource,
 	}
 }
 
