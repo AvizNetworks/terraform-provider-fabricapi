@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -43,6 +45,56 @@ type TenantResourceModel struct {
 	WebhookEvents  types.List   `tfsdk:"webhook_events"`
 	OperationID    types.String `tfsdk:"operation_id"`
 	ID             types.String `tfsdk:"id"`
+
+	// Read-only, from GET /tenants and GET /tenants/{tenantName}. UFM-only; zero/empty on NMXC fabrics.
+	PKeyValue           types.String `tfsdk:"pkey_value"`
+	UFMAllocatedPorts   types.Int64  `tfsdk:"ufm_allocated_ports"`
+	UFMAllocatedServers types.Int64  `tfsdk:"ufm_allocated_servers"`
+
+	// Read-only, from GET /tenants and GET /tenants/{tenantName}. NMXC-only; zero/empty on UFM fabrics.
+	NMXCGpusAllocated    types.Int64 `tfsdk:"nmxc_gpus_allocated"`
+	NMXCServersAllocated types.Int64 `tfsdk:"nmxc_servers_allocated"`
+	NMXCPartitions       types.List  `tfsdk:"nmxc_partitions"`
+}
+
+var nmxcPartitionAttrTypes = map[string]attr.Type{
+	"domain_name":     types.StringType,
+	"partition_id":    types.Int64Type,
+	"partition_name":  types.StringType,
+	"resiliency_mode": types.StringType,
+	"status":          types.StringType,
+}
+
+type nmxcPartitionModel struct {
+	DomainName     types.String `tfsdk:"domain_name"`
+	PartitionID    types.Int64  `tfsdk:"partition_id"`
+	PartitionName  types.String `tfsdk:"partition_name"`
+	ResiliencyMode types.String `tfsdk:"resiliency_mode"`
+	Status         types.String `tfsdk:"status"`
+}
+
+// setUFMNMXCFields populates the read-only UFM/NMXC attributes on data from a GET tenant
+// response. Shared by Create (after the tenant is readable) and Read.
+func setUFMNMXCFields(ctx context.Context, data *TenantResourceModel, t *TenantResponse) diag.Diagnostics {
+	data.PKeyValue = types.StringValue(t.PKeyValue)
+	data.UFMAllocatedPorts = types.Int64Value(int64(t.UFMAllocatedPorts))
+	data.UFMAllocatedServers = types.Int64Value(int64(t.UFMAllocatedServers))
+	data.NMXCGpusAllocated = types.Int64Value(int64(t.NMXCGpusAllocated))
+	data.NMXCServersAllocated = types.Int64Value(int64(t.NMXCServersAllocated))
+
+	partitions := make([]nmxcPartitionModel, 0, len(t.NMXCPartitions))
+	for _, p := range t.NMXCPartitions {
+		partitions = append(partitions, nmxcPartitionModel{
+			DomainName:     types.StringValue(p.DomainName),
+			PartitionID:    types.Int64Value(int64(p.PartitionID)),
+			PartitionName:  types.StringValue(p.PartitionName),
+			ResiliencyMode: types.StringValue(p.ResiliencyMode),
+			Status:         types.StringValue(p.Status),
+		})
+	}
+	partitionList, diags := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: nmxcPartitionAttrTypes}, partitions)
+	data.NMXCPartitions = partitionList
+	return diags
 }
 
 func (r *TenantResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -118,6 +170,40 @@ func (r *TenantResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "Tenant identifier",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+
+			"pkey_value": schema.StringAttribute{
+				MarkdownDescription: "Read-only, UFM PKey value.",
+				Computed:            true,
+			},
+			"ufm_allocated_ports": schema.Int64Attribute{
+				MarkdownDescription: "Read-only, UFM allocated port count.",
+				Computed:            true,
+			},
+			"ufm_allocated_servers": schema.Int64Attribute{
+				MarkdownDescription: "Read-only, UFM allocated server count.",
+				Computed:            true,
+			},
+			"nmxc_gpus_allocated": schema.Int64Attribute{
+				MarkdownDescription: "Read-only, NMXC allocated GPU count.",
+				Computed:            true,
+			},
+			"nmxc_servers_allocated": schema.Int64Attribute{
+				MarkdownDescription: "Read-only, NMXC allocated server count.",
+				Computed:            true,
+			},
+			"nmxc_partitions": schema.ListNestedAttribute{
+				MarkdownDescription: "Read-only, NMXC partitions assigned to this tenant.",
+				Computed:            true,
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"domain_name":     schema.StringAttribute{Computed: true},
+						"partition_id":    schema.Int64Attribute{Computed: true},
+						"partition_name":  schema.StringAttribute{Computed: true},
+						"resiliency_mode": schema.StringAttribute{Computed: true},
+						"status":          schema.StringAttribute{Computed: true},
+					},
 				},
 			},
 		},
@@ -386,6 +472,26 @@ func (r *TenantResource) Create(ctx context.Context, req resource.CreateRequest,
 			)
 			return
 		}
+
+		// Populate the read-only UFM/NMXC fields (e.g. pkey_value gets assigned during onboarding,
+		// before any GPU allocation) now that the tenant is confirmed readable.
+		tenantInfo, err := r.client.GetTenantWithFabric(fabricName, data.TenantName.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to read tenant after create: %s", err))
+			return
+		}
+		if tenantInfo != nil {
+			resp.Diagnostics.Append(setUFMNMXCFields(ctx, &data, tenantInfo)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+	} else {
+		// Async+webhook: not blocking on a read, so these will be unknown until the next Read.
+		resp.Diagnostics.Append(setUFMNMXCFields(ctx, &data, &TenantResponse{})...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
 	}
 
 	// State must match the plan exactly (avoids "inconsistent result" / phantom attributes).
@@ -457,6 +563,12 @@ func (r *TenantResource) Read(ctx context.Context, req resource.ReadRequest, res
 	data.Description = types.StringValue(result.Description)
 	data.MaxGpusAllowed = types.Int64Value(int64(result.MaxGpusAllowed))
 
+	// Keep the read-only UFM/NMXC fields in sync with the backend on every refresh.
+	resp.Diagnostics.Append(setUFMNMXCFields(ctx, &data, result)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -495,7 +607,10 @@ func (r *TenantResource) Delete(ctx context.Context, req resource.DeleteRequest,
 			fmt.Sprintf("Could not check allocated GPUs before tenant deletion: %s. Proceeding with delete request.", err),
 		)
 	} else if tenantInfo != nil {
-		toFree := ServersForDeallocation(tenantInfo)
+		// No fallback available (this resource doesn't track servers); fine because FM itself
+		// refuses to delete a tenant with GPUs still allocated (409 GPUS_ALLOCATED) regardless
+		// of what this best-effort pre-check finds.
+		toFree := ServersForDeallocation(tenantInfo, nil)
 		if len(toFree) > 0 {
 			resp.Diagnostics.AddWarning(
 				"Deallocating tenant servers before delete",

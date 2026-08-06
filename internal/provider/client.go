@@ -764,6 +764,25 @@ type TenantData struct {
 	AllotedGpus    string      `json:"allotedGpus"` // Comma-separated server names
 	FabricName     string      `json:"fabricName"`
 	Vnets          TenantVnets `json:"vnets"`
+
+	// UFM-specific fields (IB_EW fabrics). Empty/zero when the tenant's fabric is NMXC.
+	PKeyValue           string `json:"pkeyValue,omitempty"`
+	UFMAllocatedPorts   int    `json:"ufmAllocatedPorts,omitempty"`
+	UFMAllocatedServers int    `json:"ufmAllocatedServers,omitempty"`
+
+	// NMXC-specific fields. Empty/zero when the tenant's fabric is UFM.
+	NMXCGpusAllocated    int             `json:"nmxcGpusAllocated,omitempty"`
+	NMXCServersAllocated int             `json:"nmxcServersAllocated,omitempty"`
+	NMXCPartitions       []NMXCPartition `json:"nmxcPartitions,omitempty"`
+}
+
+// NMXCPartition represents a partition assigned to a tenant on an NMXC fabric.
+type NMXCPartition struct {
+	DomainName     string `json:"domainName"`
+	PartitionID    int    `json:"partitionId"`
+	PartitionName  string `json:"partitionName"`
+	ResiliencyMode string `json:"resiliencyMode"`
+	Status         string `json:"status"`
 }
 
 func (t *TenantData) UnmarshalJSON(data []byte) error {
@@ -777,6 +796,14 @@ func (t *TenantData) UnmarshalJSON(data []byte) error {
 		AllotedGpus   string      `json:"allotedGpus"`
 		FabricName    string      `json:"fabricName"`
 		Vnets         TenantVnets `json:"vnets"`
+
+		PKeyValue           string `json:"pkeyValue,omitempty"`
+		UFMAllocatedPorts   int    `json:"ufmAllocatedPorts,omitempty"`
+		UFMAllocatedServers int    `json:"ufmAllocatedServers,omitempty"`
+
+		NMXCGpusAllocated    int             `json:"nmxcGpusAllocated,omitempty"`
+		NMXCServersAllocated int             `json:"nmxcServersAllocated,omitempty"`
+		NMXCPartitions       []NMXCPartition `json:"nmxcPartitions,omitempty"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
@@ -794,6 +821,14 @@ func (t *TenantData) UnmarshalJSON(data []byte) error {
 		AllotedGpus:    aux.AllotedGpus,
 		FabricName:     aux.FabricName,
 		Vnets:          aux.Vnets,
+
+		PKeyValue:           aux.PKeyValue,
+		UFMAllocatedPorts:   aux.UFMAllocatedPorts,
+		UFMAllocatedServers: aux.UFMAllocatedServers,
+
+		NMXCGpusAllocated:    aux.NMXCGpusAllocated,
+		NMXCServersAllocated: aux.NMXCServersAllocated,
+		NMXCPartitions:       aux.NMXCPartitions,
 	}
 	return nil
 }
@@ -810,6 +845,16 @@ type TenantResponse struct {
 	Servers        []string `json:"servers,omitempty"`
 	AllotedGpus    string   `json:"allotedGpus"`
 	VnetsName      string   `json:"vnetsName,omitempty"`
+
+	// UFM-specific fields (IB_EW fabrics). Empty/zero when the tenant's fabric is NMXC.
+	PKeyValue           string `json:"pkeyValue,omitempty"`
+	UFMAllocatedPorts   int    `json:"ufmAllocatedPorts,omitempty"`
+	UFMAllocatedServers int    `json:"ufmAllocatedServers,omitempty"`
+
+	// NMXC-specific fields. Empty/zero when the tenant's fabric is UFM.
+	NMXCGpusAllocated    int             `json:"nmxcGpusAllocated,omitempty"`
+	NMXCServersAllocated int             `json:"nmxcServersAllocated,omitempty"`
+	NMXCPartitions       []NMXCPartition `json:"nmxcPartitions,omitempty"`
 }
 
 type FabricsAPIResponse struct {
@@ -983,6 +1028,14 @@ func (c *APIClient) GetTenantWithFabric(fabricName string, tenantName string) (*
 		MaxGpusAllowed: apiResponse.Tenant.MaxGpusAllowed,
 		GpusAllocated:  apiResponse.Tenant.GpusAllocated,
 		VnetsName:      apiResponse.Tenant.Vnets.Name,
+
+		PKeyValue:           apiResponse.Tenant.PKeyValue,
+		UFMAllocatedPorts:   apiResponse.Tenant.UFMAllocatedPorts,
+		UFMAllocatedServers: apiResponse.Tenant.UFMAllocatedServers,
+
+		NMXCGpusAllocated:    apiResponse.Tenant.NMXCGpusAllocated,
+		NMXCServersAllocated: apiResponse.Tenant.NMXCServersAllocated,
+		NMXCPartitions:       apiResponse.Tenant.NMXCPartitions,
 	}
 
 	// Parse comma-separated server names from allotedGpus
@@ -1041,6 +1094,14 @@ func (c *APIClient) ListTenants(
 			MaxGpusAllowed: t.MaxGpusAllowed,
 			GpusAllocated:  t.GpusAllocated,
 			AllotedGpus:    t.AllotedGpus,
+
+			PKeyValue:           t.PKeyValue,
+			UFMAllocatedPorts:   t.UFMAllocatedPorts,
+			UFMAllocatedServers: t.UFMAllocatedServers,
+
+			NMXCGpusAllocated:    t.NMXCGpusAllocated,
+			NMXCServersAllocated: t.NMXCServersAllocated,
+			NMXCPartitions:       t.NMXCPartitions,
 		})
 	}
 
@@ -1208,26 +1269,161 @@ func (c *APIClient) UpdateTenantServersWithFabricWithOptions(
 	return "", nil
 }
 
-// ServersForDeallocation returns host names to send in a DELETE PATCH, using parsed
-// servers from GET tenant when present, otherwise comma-split allotedGpus.
-func ServersForDeallocation(t *TenantResponse) []string {
+// GpuPortAssignmentRequest is the body for POST /fabrics/{fabric}/tenants/{tenant}/gpus, which
+// targets externally-managed (UFM/NMX-C) fabrics. No webhook or Prefer/async fields exist here.
+type GpuPortAssignmentRequest struct {
+	Operation   string   `json:"operation"`
+	ServerNames []string `json:"serverNames"`
+	// GpuIds is 1-based and optional: omit to act on all GPUs on each server.
+	GpuIds []int64 `json:"gpuIds,omitempty"`
+	// Membership is UFM-only ("full" or "limited"); omit for NMXC fabrics or to use the default.
+	Membership string `json:"membership,omitempty"`
+}
+
+// AssignPorts assigns GPU ports to a tenant (operation=ADD). Pass nil gpuIds for the whole
+// server - the request omits gpuIds entirely, never sends it as an empty list. Membership
+// ("full"/"limited") is UFM-only, pass "" to omit it.
+func (c *APIClient) AssignPorts(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	serverNames []string,
+	gpuIds []int64,
+	membership string,
+) error {
+	return c.tenantGpuPortsRequest(ctx, fabricName, tenantName, "ADD", serverNames, gpuIds, membership)
+}
+
+// UnassignPorts removes GPU ports from a tenant (operation=DELETE). Pass nil gpuIds for the
+// whole server - same no-empty-list rule as AssignPorts.
+func (c *APIClient) UnassignPorts(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	serverNames []string,
+	gpuIds []int64,
+	membership string,
+) error {
+	return c.tenantGpuPortsRequest(ctx, fabricName, tenantName, "DELETE", serverNames, gpuIds, membership)
+}
+
+// tenantGpuPortsRequest backs AssignPorts/UnassignPorts. Always synchronous (no Prefer,
+// webhooks, or operationId); success/failure comes from the flat JSON response body.
+func (c *APIClient) tenantGpuPortsRequest(
+	ctx context.Context,
+	fabricName string,
+	tenantName string,
+	operation string,
+	serverNames []string,
+	gpuIds []int64,
+	membership string,
+) error {
+	u := fmt.Sprintf("%s/fabrics/%s/tenants/%s/gpus", c.Endpoint, fabricName, tenantName)
+
+	reqBody := GpuPortAssignmentRequest{
+		Operation:   operation,
+		ServerNames: serverNames,
+	}
+	if len(gpuIds) > 0 {
+		reqBody.GpuIds = gpuIds
+	}
+	if strings.TrimSpace(membership) != "" {
+		reqBody.Membership = strings.TrimSpace(membership)
+	}
+
+	respBody, status, err := c.doRequestRaw(ctx, http.MethodPost, u, reqBody, 60*time.Minute)
+	if err != nil {
+		return err
+	}
+
+	// Only success/error/message matter here; other echoed fields are unused.
+	var parsed struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error,omitempty"`
+		Message string `json:"message,omitempty"`
+	}
+	_ = json.Unmarshal(respBody, &parsed)
+
+	if status < 200 || status >= 300 {
+		msg := firstNonEmpty(parsed.Error, parsed.Message, string(respBody))
+		return fmt.Errorf("API returned status %d: %s", status, msg)
+	}
+
+	if !parsed.Success {
+		msg := firstNonEmpty(parsed.Error, parsed.Message, "GPU port assignment failed")
+		return fmt.Errorf("%s", msg)
+	}
+
+	return nil
+}
+
+// InventorySyncResponse is the body of POST /fabrics/{fabric}/inventorySync.
+type InventorySyncResponse struct {
+	Success         bool   `json:"success"`
+	FabricName      string `json:"fabricName"`
+	HostsDiscovered int    `json:"hostsDiscovered"`
+	PortsDiscovered int    `json:"portsDiscovered"`
+	Message         string `json:"message"`
+}
+
+// InventorySync triggers an immediate UFM inventory sync for the fabric (POST
+// /fabrics/{fabric}/inventorySync, no request body), bypassing the scheduled interval. Used to
+// force FM to reconcile its own bookkeeping (hosts, ports, PKey assignments) against the real UFM
+// appliance - e.g. after a stuck/orphaned PKey partition causes tenant onboarding to fail.
+func (c *APIClient) InventorySync(ctx context.Context, fabricName string) (*InventorySyncResponse, error) {
+	u := fmt.Sprintf("%s/fabrics/%s/inventorySync", c.Endpoint, fabricName)
+
+	respBody, status, err := c.doRequestRaw(ctx, http.MethodPost, u, nil, 5*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+
+	var parsed InventorySyncResponse
+	_ = json.Unmarshal(respBody, &parsed)
+
+	if status < 200 || status >= 300 {
+		msg := firstNonEmpty(parsed.Message, string(respBody))
+		return nil, fmt.Errorf("API returned status %d: %s", status, msg)
+	}
+
+	return &parsed, nil
+}
+
+// ResolveTenantServers returns the tenant's currently-allocated servers: from GET tenant when the
+// API reports them, otherwise fallback. Used for reconciliation generally (ADD, DELETE, and diffing
+// alike), not just deallocation. allotedGpus is always empty on EW-IBOnly fabrics even when GPUs
+// are really allocated, so fallback keeps that case from looking like "nothing allocated".
+func ResolveTenantServers(t *TenantResponse, fallback []string) []string {
 	if t == nil {
 		return nil
 	}
 	if len(t.Servers) > 0 {
 		return t.Servers
 	}
-	if t.AllotedGpus == "" {
-		return nil
-	}
-	var out []string
-	for _, s := range strings.Split(t.AllotedGpus, ",") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			out = append(out, s)
+	if t.AllotedGpus != "" {
+		var out []string
+		for _, s := range strings.Split(t.AllotedGpus, ",") {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				out = append(out, s)
+			}
 		}
+		return out
 	}
-	return out
+	if hasUnreportedAllocation(t) && len(fallback) > 0 {
+		return fallback
+	}
+	return nil
+}
+
+// hasUnreportedAllocation reports a real GPU allocation that allotedGpus/Servers missed - always
+// true on EW-IBOnly fabrics, where allotedGpus is empty regardless. gpusAllocated alone is
+// reliable here on every fabric type.
+func hasUnreportedAllocation(t *TenantResponse) bool {
+	if t == nil {
+		return false
+	}
+	return t.GpusAllocated > 0
 }
 
 func (c *APIClient) GetAllocatedServers(ctx context.Context, fabric string) (map[string]string, error) {
