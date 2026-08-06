@@ -556,7 +556,15 @@ func (r *TenantServersResource) Update(ctx context.Context, req resource.UpdateR
 			}
 		}
 
-		opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toDelete, nil, &requestOptions{
+		// Release with the same shared value used to allocate (see Delete): shared=true servers
+		// must be DELETEd with shared:true so FM skips the E-W whole-server dealloc.
+		var delShared *bool
+		if !plan.Shared.IsNull() && !plan.Shared.IsUnknown() {
+			v := plan.Shared.ValueBool()
+			delShared = &v
+		}
+
+		opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toDelete, delShared, &requestOptions{
 			Prefer:          prefer,
 			WebhooksEnabled: webhooksEnabled,
 			WebhookURL:      webhookURL,
@@ -798,6 +806,13 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		)
 		return
 	}
+	// Release with the same shared value used to allocate: a shared=true server must be DELETEd
+	// with shared:true so FM skips the E-W whole-server dealloc (else GPU_NOT_ALLOCATED).
+	var shared *bool
+	if !data.Shared.IsNull() && !data.Shared.IsUnknown() {
+		v := data.Shared.ValueBool()
+		shared = &v
+	}
 	webhooksEnabled := false
 	if !data.WebhooksEnabled.IsNull() && !data.WebhooksEnabled.IsUnknown() {
 		webhooksEnabled = data.WebhooksEnabled.ValueBool()
@@ -823,7 +838,7 @@ func (r *TenantServersResource) Delete(ctx context.Context, req resource.DeleteR
 		}
 	}
 
-	opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toFree, nil, &requestOptions{
+	opID, err := r.client.UpdateTenantServersWithFabricWithOptions(ctx, fabricName, tenantName, "DELETE", toFree, shared, &requestOptions{
 		Prefer:          prefer,
 		WebhooksEnabled: webhooksEnabled,
 		WebhookURL:      webhookURL,

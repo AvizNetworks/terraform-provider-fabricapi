@@ -1222,19 +1222,19 @@ func (c *APIClient) UpdateTenantServersWithFabricWithOptions(
 		"operation": operation,
 	}
 
-	if operation == "DELETE" {
-		// Deallocate: {"operation":"DELETE","servers":["host1","host2"]}
-		reqMap["servers"] = servers
-	} else {
-		serverUpdates := make([]TenantServerUpdate, 0, len(servers))
-		for _, server := range servers {
-			serverUpdates = append(serverUpdates, TenantServerUpdate{
-				ServerName: server,
-				Shared:     shared,
-			})
-		}
-		reqMap["servers"] = serverUpdates
+	// Both ADD and DELETE send per-server objects carrying the shared flag. DELETE must carry the
+	// same shared value used on ADD: for a shared=true server, shared:true tells FM to skip the
+	// E-W (UFM/NMX-C) whole-server dealloc it also skipped on ADD - otherwise FM attempts an E-W
+	// dealloc that was never done and returns GPU_NOT_ALLOCATED. (shared is *bool with omitempty,
+	// so a nil shared is simply omitted, preserving the old {"serverName":...} shape.)
+	serverUpdates := make([]TenantServerUpdate, 0, len(servers))
+	for _, server := range servers {
+		serverUpdates = append(serverUpdates, TenantServerUpdate{
+			ServerName: server,
+			Shared:     shared,
+		})
 	}
+	reqMap["servers"] = serverUpdates
 
 	if wh := maybeWebhookBody(opts); wh != nil {
 		for k, v := range wh {
