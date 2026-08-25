@@ -24,6 +24,11 @@ type APIClient struct {
 	Fabric       string
 	AuthEndpoint string
 
+	// ConfigEndpoint is the base URL for the ONES UI "config" service
+	// (e.g. POST {ConfigEndpoint}/api/config/addFabricData). This is a
+	// separate backend/host from Endpoint (the Fabric API on :8089).
+	ConfigEndpoint string
+
 	// Auth: Username/Password are used to fetch an access token (and refresh token) via POST /login.
 	// Token is then used as an Authorization Bearer token for all requests.
 	// When RefreshToken is present, the client will refresh the access token once on 401 responses.
@@ -1577,6 +1582,72 @@ func (c *APIClient) CreateGpuAllocationsWithOptions(
 	}
 
 	return "", nil
+}
+
+// FabricDataRequest matches the ONES UI "config" service contract:
+// POST {config_endpoint}/api/config/addFabricData.
+type FabricDataRequest struct {
+	Name              string            `json:"name"`
+	Type              string            `json:"type"`
+	Status            string            `json:"status"`
+	Description       string            `json:"description"`
+	NumOfSus          int               `json:"numOfSus"`
+	MaxNumOfSus       int               `json:"maxNumOfSus"`
+	HostMap           map[string]string `json:"hostMap"`
+	StartingSubnetGpu string            `json:"startingSubnetGpu"`
+	SimulationID      int               `json:"simulationId"`
+	EnableEW          bool              `json:"enableEW"`
+	SuHostCnt         string            `json:"suHostCnt"`
+	Tenant            string            `json:"tenant"`
+	Instance          string            `json:"instance"`
+}
+
+// rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent
+// exactly as-is. Unlike the Fabric API (Endpoint), the config service's
+// addFabricData endpoint expects the raw JWT with no "Bearer " prefix.
+func rawTokenHeaderValue(token string) string {
+	tok := strings.TrimSpace(token)
+	if strings.HasPrefix(strings.ToLower(tok), "bearer ") {
+		return strings.TrimSpace(tok[len("bearer "):])
+	}
+	return tok
+}
+
+// CreateFabricData POSTs {config_endpoint}/api/config/addFabricData, used by the
+// ONES UI to create/generate a fabric. It reuses the provider's login/token flow
+// (via ensureToken) but sends the raw token in Authorization, without the "Bearer "
+// prefix used by every other Fabric API call in this client.
+func (c *APIClient) CreateFabricData(ctx context.Context, reqBody FabricDataRequest) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	u := base + "/api/config/addFabricData"
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, reqBody, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, nil
 }
 
 func (c *APIClient) WaitForTenantReady(

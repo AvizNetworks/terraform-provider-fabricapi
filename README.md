@@ -18,6 +18,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Per-GPU allocations** (`fabricapi_gpu_allocations`): map/unmap logical GPUs (G0–G7) on servers already attached to a tenant (POST `.../gpuAllocations`)
 - **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
+- **Fabric** (`fabricapi_fabric`): create a fabric via the ONES UI config service (POST `/api/config/addFabricData`) — requires provider `config_endpoint` / `FABRIC_API_CONFIG_ENDPOINT`
 
 ### Data sources
 
@@ -35,6 +36,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
   - `05-available-servers`: lookup free servers before allocate (read-only)
   - `06-vf-interfaces`: lookup HBN VF interfaces on a server (read-only)
   - `07-vf-assign`: bind/unbind a VF to a tenant VLAN
+  - `08-fabric`: create a fabric via the ONES UI config service
 
 - **State files**: each root keeps its own state; use one consistent `tenant_name` across those commands for the same tenant, new state filenames for a different tenant, and follow the guides for VPC peering cleanup. See **How state files relate to tenants** in `README.docker.md` or `README.make.md`.
 

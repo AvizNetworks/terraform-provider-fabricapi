@@ -19,10 +19,11 @@ type FabricAPIProvider struct {
 }
 
 type FabricAPIProviderModel struct {
-	Endpoint     types.String `tfsdk:"endpoint"`
-	Fabric       types.String `tfsdk:"fabric"`
-	AuthEndpoint types.String `tfsdk:"auth_endpoint"`
-	AccessToken  types.String `tfsdk:"access_token"`
+	Endpoint       types.String `tfsdk:"endpoint"`
+	Fabric         types.String `tfsdk:"fabric"`
+	AuthEndpoint   types.String `tfsdk:"auth_endpoint"`
+	ConfigEndpoint types.String `tfsdk:"config_endpoint"`
+	AccessToken    types.String `tfsdk:"access_token"`
 	RefreshToken types.String `tfsdk:"refresh_token"`
 	Username     types.String `tfsdk:"username"`
 	Password     types.String `tfsdk:"password"`
@@ -55,6 +56,10 @@ func (p *FabricAPIProvider) Schema(ctx context.Context, req provider.SchemaReque
 			},
 			"auth_endpoint": schema.StringAttribute{
 				MarkdownDescription: "Auth endpoint base URL (used for POST /login). If unset, defaults to endpoint.",
+				Optional:            true,
+			},
+			"config_endpoint": schema.StringAttribute{
+				MarkdownDescription: "Base URL for the ONES UI config service (used by fabricapi_fabric for POST /api/config/addFabricData). This is a separate backend/host from `endpoint`. Required only when using fabricapi_fabric.",
 				Optional:            true,
 			},
 			"access_token": schema.StringAttribute{
@@ -96,6 +101,7 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 	endpoint := os.Getenv("FABRIC_API_ENDPOINT")
 	fabric := os.Getenv("FABRIC_NAME")
 	authEndpoint := os.Getenv("FABRIC_API_AUTH_ENDPOINT")
+	configEndpoint := os.Getenv("FABRIC_API_CONFIG_ENDPOINT")
 	accessToken := os.Getenv("FABRIC_API_ACCESS_TOKEN")
 	refreshToken := os.Getenv("FABRIC_API_REFRESH_TOKEN")
 	username := os.Getenv("FABRIC_API_USERNAME")
@@ -113,6 +119,9 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 
 	if !data.AuthEndpoint.IsNull() {
 		authEndpoint = data.AuthEndpoint.ValueString()
+	}
+	if !data.ConfigEndpoint.IsNull() {
+		configEndpoint = data.ConfigEndpoint.ValueString()
 	}
 	if !data.AccessToken.IsNull() {
 		accessToken = data.AccessToken.ValueString()
@@ -151,14 +160,15 @@ func (p *FabricAPIProvider) Configure(ctx context.Context, req provider.Configur
 	}
 
 	client := &APIClient{
-		Endpoint:     endpoint,
-		Fabric:       fabric,
-		AuthEndpoint: authEndpoint,
-		Token:        strings.TrimSpace(accessToken),
-		RefreshToken: refreshToken,
-		Username:     username,
-		Password:     password,
-		InsecureTLS:  insecureTLS,
+		Endpoint:       endpoint,
+		Fabric:         fabric,
+		AuthEndpoint:   authEndpoint,
+		ConfigEndpoint: configEndpoint,
+		Token:          strings.TrimSpace(accessToken),
+		RefreshToken:   refreshToken,
+		Username:       username,
+		Password:       password,
+		InsecureTLS:    insecureTLS,
 	}
 
 	resp.DataSourceData = client
@@ -184,6 +194,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewVfAssignResource,
 		NewVpcPeeringResource,
 		NewAuthLogoutResource,
+		NewFabricResource,
 	}
 }
 

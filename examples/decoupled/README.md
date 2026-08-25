@@ -42,6 +42,7 @@ Each root keeps **its own** state file. Reuse the same `-state=...` path when co
 | `06-vf-interfaces` | `states/e2e_vf_interfaces.tfstate` | **Data source only** — refreshed each apply; no destroy needed |
 | `07-vf-assign` | `states/e2e_vf_assign.tfstate` | Resource — destroy to unbind VF |
 | `03-vpcpeering` | `states/e2e_vpc.tfstate` | Resource — see VPC peering notes in Docker/Make README |
+| `08-fabric` | `states/e2e_fabric.tfstate` | Resource — create-only; destroy removes from state only |
 
 Use a **new state filename** when starting a different tenant or a clean run.
 
@@ -63,6 +64,7 @@ mkdir -p examples/decoupled/04-gpu-allocations/states
 mkdir -p examples/decoupled/05-available-servers/states
 mkdir -p examples/decoupled/06-vf-interfaces/states
 mkdir -p examples/decoupled/07-vf-assign/states
+mkdir -p examples/decoupled/08-fabric/states
 
 rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
 rm -f examples/decoupled/02-servers/.terraform.lock.hcl
@@ -71,6 +73,7 @@ rm -f examples/decoupled/04-gpu-allocations/.terraform.lock.hcl
 rm -f examples/decoupled/05-available-servers/.terraform.lock.hcl
 rm -f examples/decoupled/06-vf-interfaces/.terraform.lock.hcl
 rm -f examples/decoupled/07-vf-assign/.terraform.lock.hcl
+rm -f examples/decoupled/08-fabric/.terraform.lock.hcl
 
 terraform -chdir=examples/decoupled/01-tenant init -upgrade
 terraform -chdir=examples/decoupled/02-servers init -upgrade
@@ -79,6 +82,7 @@ terraform -chdir=examples/decoupled/04-gpu-allocations init -upgrade
 terraform -chdir=examples/decoupled/05-available-servers init -upgrade
 terraform -chdir=examples/decoupled/06-vf-interfaces init -upgrade
 terraform -chdir=examples/decoupled/07-vf-assign init -upgrade
+terraform -chdir=examples/decoupled/08-fabric init -upgrade
 ```
 
 **Fabric name is case-sensitive** — use the exact name from `GET /fabrics` (e.g. `Get_fab`, not `get_fab`).
@@ -245,6 +249,35 @@ terraform -chdir=examples/decoupled/03-vpcpeering apply -auto-approve \
 ```
 
 Fabric is taken from `FABRIC_NAME` / provider `fabric` (set `Get_fab` in env before apply).
+
+---
+
+## 08 - Fabric (create via ONES UI config service)
+
+Creates `fabricapi_fabric` — POST `/api/config/addFabricData`, the same call the ONES UI makes to generate/create a fabric.
+
+- Requires `config_endpoint` (provider attribute) or `FABRIC_API_CONFIG_ENDPOINT` (env) — a **separate host/port** from `FABRIC_API_ENDPOINT` (the ONES UI/config backend, not the Fabric API on `:8089`).
+- Create-only: there is no known GET/DELETE endpoint for this object, so `destroy` only removes it from Terraform state (does not delete remotely).
+
+### Sample commands
+
+```bash
+export FABRIC_API_CONFIG_ENDPOINT="https://YOUR_ONES_UI_HOST"
+
+terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
+  -state=states/e2e_fabric.tfstate \
+  -var="name=testAPI2" \
+  -var="type=Aviz RA" \
+  -var="description=sdf" \
+  -var="num_of_sus=1" \
+  -var="max_num_of_sus=1" \
+  -var='host_map={"0"="1"}' \
+  -var="starting_subnet_gpu=192" \
+  -var="simulation_id=1" \
+  -var="enable_ew=true" \
+  -var="su_host_cnt={0:1}" \
+  -var="tenant=ones"
+```
 
 ---
 
