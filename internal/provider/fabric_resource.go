@@ -18,13 +18,11 @@ func NewFabricResource() resource.Resource {
 	return &FabricResource{}
 }
 
-// FabricResource manages a fabric via the ONES UI config service:
-// POST /api/config/addFabricData to create (the same call the UI makes to
-// generate/create a fabric) and DELETE /api/config/deletefabricbyname/{name}
-// to delete. There is no known GET endpoint for this object, so Read is a
-// best-effort no-op (see VpcPeeringResource for the same pattern), and actual
-// deletion on destroy is opt-in via delete_on_destroy (default: state-only
-// removal, matching the pre-delete-support behavior).
+// FabricResource manages a fabric via the ONES UI config service
+// (POST /api/config/addFabricData) — the same call the UI makes to
+// generate/create a fabric. There is no known GET/DELETE endpoint for this
+// object, so this resource is create-only (see VpcPeeringResource for the
+// same pattern): destroy only removes it from Terraform state.
 type FabricResource struct {
 	client *APIClient
 }
@@ -55,7 +53,7 @@ func (r *FabricResource) Metadata(ctx context.Context, req resource.MetadataRequ
 
 func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Creates (and optionally deletes) a fabric via the ONES UI config service: POST /api/config/addFabricData and DELETE /api/config/deletefabricbyname/{name} — the same calls the ONES UI makes. Requires provider attribute `config_endpoint` (or env `FABRIC_API_CONFIG_ENDPOINT`) pointing at the UI/config backend, which is a different host from `endpoint`. There is no known API to read back a fabric, so Read is a best-effort no-op. By default `terraform destroy` only removes the resource from Terraform state (does not delete remotely); set `delete_on_destroy = true` to also call the delete API.",
+		MarkdownDescription: "Creates a fabric via the ONES UI config service (POST /api/config/addFabricData) — the same call the ONES UI makes to generate a fabric. Requires provider attribute `config_endpoint` (or env `FABRIC_API_CONFIG_ENDPOINT`) pointing at the UI/config backend, which is a different host from `endpoint`. Create-only: there is no known API to read back or delete a fabric, so destroy only removes it from Terraform state.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required: true,
@@ -120,7 +118,7 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Computed:            true,
 			},
 			"delete_on_destroy": schema.BoolAttribute{
-				MarkdownDescription: "If true, `terraform destroy` calls DELETE /api/config/deletefabricbyname/{name} to actually delete the fabric before removing it from Terraform state. If false/unset (default), destroy only removes it from Terraform state — the fabric remains in ONES.",
+				MarkdownDescription: "Reserved for forward compatibility. There is currently no known delete API for a fabric; destroy always just removes it from Terraform state.",
 				Optional:            true,
 			},
 			"id": schema.StringAttribute{
@@ -218,43 +216,11 @@ func (r *FabricResource) Read(ctx context.Context, req resource.ReadRequest, res
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// Update allows `delete_on_destroy` to change in place — it is local Terraform
-// bookkeeping only (no API call happens on apply), so a resource created without
-// it can have it flipped on later to enable a real delete on a future destroy.
-// Every other attribute maps to the addFabricData request, which has no update
-// endpoint, so any other change is rejected.
 func (r *FabricResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan, state FabricResourceModel
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
-	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	onlyDeleteOnDestroyChanged := plan.Name.Equal(state.Name) &&
-		plan.Type.Equal(state.Type) &&
-		plan.Status.Equal(state.Status) &&
-		plan.Description.Equal(state.Description) &&
-		plan.NumOfSus.Equal(state.NumOfSus) &&
-		plan.MaxNumOfSus.Equal(state.MaxNumOfSus) &&
-		plan.HostMap.Equal(state.HostMap) &&
-		plan.StartingSubnetGpu.Equal(state.StartingSubnetGpu) &&
-		plan.SimulationID.Equal(state.SimulationID) &&
-		plan.EnableEW.Equal(state.EnableEW) &&
-		plan.SuHostCnt.Equal(state.SuHostCnt) &&
-		plan.Tenant.Equal(state.Tenant) &&
-		plan.Instance.Equal(state.Instance)
-
-	if !onlyDeleteOnDestroyChanged {
-		resp.Diagnostics.AddError(
-			"Update not supported",
-			"Only `delete_on_destroy` can be changed in place. Changing any other fabric attribute requires recreating the resource.",
-		)
-		return
-	}
-
-	plan.ID = state.ID
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	resp.Diagnostics.AddError(
+		"Update not supported",
+		"Changing fabric inputs requires recreating the resource.",
+	)
 }
 
 func (r *FabricResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -265,18 +231,13 @@ func (r *FabricResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	}
 
 	if !data.DeleteOnDestroy.IsNull() && data.DeleteOnDestroy.ValueBool() {
-		respBody, err := r.client.DeleteFabricData(ctx, data.Name.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete fabric: %s", err))
-			return
-		}
-		if respBody != "" {
-			resp.Diagnostics.AddWarning("Fabric deleted", respBody)
-		}
+		resp.Diagnostics.AddWarning(
+			"Delete on destroy not implemented",
+			"This provider currently creates fabric data but does not delete it (no known delete API).",
+		)
 	}
 
-	// Remove from Terraform state so destroy completes cleanly and future plans are
-	// accurate. When delete_on_destroy is false/unset, this only drops Terraform
-	// management — the fabric remains in ONES.
+	// Even though we don't delete the remote resource, remove it from Terraform state
+	// so that destroy completes cleanly and future plans are accurate.
 	resp.State.RemoveResource(ctx)
 }
