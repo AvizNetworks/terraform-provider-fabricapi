@@ -25,8 +25,6 @@ resource "fabricapi_fabric" "this" {
   enable_ew           = var.enable_ew
   su_host_cnt         = var.su_host_cnt
   tenant              = var.tenant
-
-  delete_on_destroy = var.delete_on_destroy
 }
 
 output "fabric_id" {

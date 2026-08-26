@@ -1650,6 +1650,46 @@ func (c *APIClient) CreateFabricData(ctx context.Context, reqBody FabricDataRequ
 	return bodyStr, nil
 }
 
+// DeleteFabricData DELETEs {config_endpoint}/api/config/deletefabricbyname/{name}, the
+// same ONES UI config service used by CreateFabricData (same host, same raw-token
+// Authorization header with no "Bearer " prefix).
+func (c *APIClient) DeleteFabricData(ctx context.Context, name string) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("fabric name is required")
+	}
+	u := fmt.Sprintf("%s/api/config/deletefabricbyname/%s", base, url.PathEscape(name))
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodDelete, u, nil, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, nil
+}
+
 func (c *APIClient) WaitForTenantReady(
 	ctx context.Context,
 	fabric string,

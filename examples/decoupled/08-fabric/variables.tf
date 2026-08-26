@@ -57,8 +57,3 @@ variable "tenant" {
   default     = "ones"
 }
 
-variable "delete_on_destroy" {
-  description = "Reserved for forward compatibility; there is no known delete API, so destroy always just removes it from Terraform state."
-  type        = bool
-  default     = false
-}

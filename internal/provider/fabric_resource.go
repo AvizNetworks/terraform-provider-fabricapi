@@ -18,11 +18,12 @@ func NewFabricResource() resource.Resource {
 	return &FabricResource{}
 }
 
-// FabricResource manages a fabric via the ONES UI config service
-// (POST /api/config/addFabricData) — the same call the UI makes to
-// generate/create a fabric. There is no known GET/DELETE endpoint for this
-// object, so this resource is create-only (see VpcPeeringResource for the
-// same pattern): destroy only removes it from Terraform state.
+// FabricResource manages a fabric via the ONES UI config service:
+// POST /api/config/addFabricData to create (the same call the UI makes to
+// generate/create a fabric) and DELETE /api/config/deletefabricbyname/{name}
+// to delete — always called on destroy, unconditionally, matching how
+// TenantResource's Delete works. There is no known GET endpoint for this
+// object, so Read is a best-effort no-op (see VpcPeeringResource).
 type FabricResource struct {
 	client *APIClient
 }
@@ -42,8 +43,6 @@ type FabricResourceModel struct {
 	Tenant            types.String `tfsdk:"tenant"`
 	Instance          types.String `tfsdk:"instance"`
 
-	DeleteOnDestroy types.Bool `tfsdk:"delete_on_destroy"`
-
 	ID types.String `tfsdk:"id"`
 }
 
@@ -53,7 +52,7 @@ func (r *FabricResource) Metadata(ctx context.Context, req resource.MetadataRequ
 
 func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Creates a fabric via the ONES UI config service (POST /api/config/addFabricData) — the same call the ONES UI makes to generate a fabric. Requires provider attribute `config_endpoint` (or env `FABRIC_API_CONFIG_ENDPOINT`) pointing at the UI/config backend, which is a different host from `endpoint`. Create-only: there is no known API to read back or delete a fabric, so destroy only removes it from Terraform state.",
+		MarkdownDescription: "Creates and deletes a fabric via the ONES UI config service: POST /api/config/addFabricData and DELETE /api/config/deletefabricbyname/{name} — the same calls the ONES UI makes. Requires provider attribute `config_endpoint` (or env `FABRIC_API_CONFIG_ENDPOINT`) pointing at the UI/config backend, which is a different host from `endpoint`. There is no known API to read back a fabric, so Read is a best-effort no-op. `terraform destroy` always calls the delete API.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				Required: true,
@@ -116,10 +115,6 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "Target instance, e.g. \"fm\". Defaults to \"fm\" if unset.",
 				Optional:            true,
 				Computed:            true,
-			},
-			"delete_on_destroy": schema.BoolAttribute{
-				MarkdownDescription: "Reserved for forward compatibility. There is currently no known delete API for a fabric; destroy always just removes it from Terraform state.",
-				Optional:            true,
 			},
 			"id": schema.StringAttribute{
 				Computed: true,
@@ -230,14 +225,14 @@ func (r *FabricResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	if !data.DeleteOnDestroy.IsNull() && data.DeleteOnDestroy.ValueBool() {
-		resp.Diagnostics.AddWarning(
-			"Delete on destroy not implemented",
-			"This provider currently creates fabric data but does not delete it (no known delete API).",
-		)
+	respBody, err := r.client.DeleteFabricData(ctx, data.Name.ValueString())
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to delete fabric: %s", err))
+		return
+	}
+	if respBody != "" {
+		resp.Diagnostics.AddWarning("Fabric deleted", respBody)
 	}
 
-	// Even though we don't delete the remote resource, remove it from Terraform state
-	// so that destroy completes cleanly and future plans are accurate.
 	resp.State.RemoveResource(ctx)
 }
