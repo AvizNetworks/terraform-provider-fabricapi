@@ -18,7 +18,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Per-GPU allocations** (`fabricapi_gpu_allocations`): map/unmap logical GPUs (G0–G7) on servers already attached to a tenant (POST `.../gpuAllocations`)
 - **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
-- **Fabric** (`fabricapi_fabric`): create a fabric via the ONES UI config service (POST `/api/config/addFabricData`) — requires provider `config_endpoint` / `FABRIC_API_CONFIG_ENDPOINT`
+- **Fabric** (`fabricapi_fabric`): create/delete a fabric via the ONES UI config service (POST `/api/config/addFabricData`, DELETE `/api/config/deletefabricbyname/{name}`) — requires provider `config_endpoint` / `FABRIC_API_CONFIG_ENDPOINT`; delete on destroy is opt-in via `delete_on_destroy`
 
 ### Data sources
 
