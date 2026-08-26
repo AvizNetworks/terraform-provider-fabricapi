@@ -2,7 +2,7 @@
 # Once this file exists, `apply` and `destroy` need no -var flags at all: they both
 # read the same values from terraform.tfvars automatically.
 
-name                = "testAPI2"
+name                = "testAPI7"
 type                = "Aviz RA"
 description         = "sdf"
 num_of_sus          = 1
