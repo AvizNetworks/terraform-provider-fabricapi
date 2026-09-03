@@ -27,6 +27,29 @@ resource "fabricapi_fabric" "this" {
   tenant              = var.tenant
 }
 
+# devices can come from a JSON file (var.devices_file) instead of inline HCL — handy when
+# the credential list already exists as a file (e.g. exported from a lab topology tool).
+# The file takes precedence over var.devices when set.
+locals {
+  devices_effective = var.devices_file != "" ? jsondecode(file(var.devices_file)) : var.devices
+}
+
+# Deploy is a separate, explicit step (opt-in via var.deploy) — it pushes the fabric's
+# generated config onto real switches. Leave var.deploy=false to only design/review the
+# fabric (Draft), same as before this resource existed.
+resource "fabricapi_fabric_deploy" "this" {
+  count = var.deploy ? 1 : 0
+
+  fabric_name     = fabricapi_fabric.this.name
+  description     = var.description
+  deployment_type = var.deployment_type
+  devices         = local.devices_effective
+}
+
 output "fabric_id" {
   value = fabricapi_fabric.this.id
+}
+
+output "fabric_deploy_id" {
+  value = var.deploy ? fabricapi_fabric_deploy.this[0].id : null
 }

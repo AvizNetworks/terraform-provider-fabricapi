@@ -42,7 +42,7 @@ Each root keeps **its own** state file. Reuse the same `-state=...` path when co
 | `06-vf-interfaces` | `states/e2e_vf_interfaces.tfstate` | **Data source only** — refreshed each apply; no destroy needed |
 | `07-vf-assign` | `states/e2e_vf_assign.tfstate` | Resource — destroy to unbind VF |
 | `03-vpcpeering` | `states/e2e_vpc.tfstate` | Resource — see VPC peering notes in Docker/Make README |
-| `08-fabric` | `states/e2e_fabric.tfstate` | Resource — destroy always deletes remotely (unconditional) |
+| `08-fabric` | `states/e2e_fabric.tfstate` | Resources — fabric destroy always deletes remotely; deploy destroy is state-only |
 
 Use a **new state filename** when starting a different tenant or a clean run.
 
@@ -252,15 +252,30 @@ Fabric is taken from `FABRIC_NAME` / provider `fabric` (set `Get_fab` in env bef
 
 ---
 
-## 08 - Fabric (create/delete via ONES UI config service)
+## 08 - Fabric (design + deploy via ONES UI config service)
 
-Manages `fabricapi_fabric` — POST `/api/config/addFabricData` to create (the same call the ONES UI makes to generate a fabric), DELETE `/api/config/deletefabricbyname/{name}` to delete.
+Manages `fabricapi_fabric` (design) and `fabricapi_fabric_deploy` (deploy), matching the ONES UI's two distinct actions:
+
+- `fabricapi_fabric` — POST `/api/config/addFabricData` to create (Draft, generates a skeleton YAML + inventory with **blank** device credentials), DELETE `/api/config/deletefabricbyname/{name}` to delete.
+- `fabricapi_fabric_deploy` — the "Deploy Fabric" button's full sequence:
+  1. POST `/api/config/uploadip` — fill in real `ip`/`username`/`password` per device (patches the YAML on disk).
+  2. POST `/api/config/validateswitch` — SSH-validate every spine/leaf; **hard-fails the apply** if any device errors or doesn't report a build.
+  3. POST `/api/config/validateserver` — SSH-validate every host/DPU; **hard-fails the apply** if any device errors or doesn't report an OS.
+  4. POST `/api/config/updateinventory` — push device credentials to the downstream FM engine's inventory.
+  5. GET `/fabrics/{name}` (fetch the now credential-filled YAML) → POST `/api/config` (push it to the real switches).
+  6. POST `/api/config/updatefabricstatus` — mark the fabric `Deployed`.
+
+Notes:
 
 - Requires `config_endpoint` (provider attribute) or `FABRIC_API_CONFIG_ENDPOINT` (env) — a **separate host/port** from `FABRIC_API_ENDPOINT` (the ONES UI/config backend, not the Fabric API on `:8089`).
-- There is no known GET endpoint for this object, so Read is a best-effort no-op.
-- `terraform destroy` always calls the delete API (unconditional, like `fabricapi_tenant`) — there is no opt-in flag.
+- There is no known GET endpoint reporting `fabricapi_fabric`'s own state, so its Read is a best-effort no-op. Same for `fabricapi_fabric_deploy`.
+- `terraform destroy` on `fabricapi_fabric` always calls the delete API (unconditional, like `fabricapi_tenant`). `fabricapi_fabric_deploy` has no known "undeploy" API, so its destroy only removes it from Terraform state — the fabric stays Deployed in ONES.
+- **Deploy pushes real config to physical switches and SSHes into real credentials.** In this example it's gated behind `var.deploy` (default `false`) so a plain `apply` only designs/reviews the fabric — set `-var="deploy=true"` (and supply `var.devices`) deliberately when you want to actually push it live.
+- **Not implemented**: UFM host-mapping confirmation, border-leaf port configuration, and NMX onboarding/probe — fabrics needing those conditional flows still require manual steps in the ONES UI.
+- `var.devices` (per-device `hostname`/`ip`/`username`/`password`/`device_type`/`device_role`/`apply_config`) must cover every device in the fabric's generated inventory — check the `addFabricData` response or the ONES UI's Devices tab for the exact hostnames/roles. It's marked `sensitive` in `variables.tf`; keep real values out of version control (use `terraform.tfvars`, not `-var` on the command line, to avoid them landing in shell history).
+- Alternatively, set `var.devices_file` to a JSON file path (copy `devices.json.example` → `devices.json`, fill in real values) instead of writing `devices` inline — it takes precedence over `var.devices` when set. `devices.json` is gitignored; only the `.example` is tracked.
 
-### Sample commands — create
+### Sample commands — design only (Draft)
 
 ```bash
 export FABRIC_API_CONFIG_ENDPOINT="https://YOUR_ONES_UI_HOST"
@@ -280,7 +295,21 @@ terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
   -var="tenant=ones"
 ```
 
+### Sample commands — design + deploy (pushes config to real switches)
+
+`devices` (real per-device credentials) is impractical and unsafe to pass via `-var` on the
+command line — put it, `deploy = true`, and the rest of your values in `terraform.tfvars`
+(copy `terraform.tfvars.example`) instead:
+
+```bash
+terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
+  -state=states/e2e_fabric.tfstate \
+  -var-file=terraform.tfvars
+```
+
 ### Sample commands — delete (destroy)
+
+Same `-var` values as whichever `apply` created the state (include `deploy=true` if that's what's in state):
 
 ```bash
 terraform -chdir=examples/decoupled/08-fabric destroy -auto-approve \

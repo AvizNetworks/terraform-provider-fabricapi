@@ -19,6 +19,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
 - **Fabric** (`fabricapi_fabric`): create/delete a fabric via the ONES UI config service (POST `/api/config/addFabricData`, DELETE `/api/config/deletefabricbyname/{name}`) — requires provider `config_endpoint` / `FABRIC_API_CONFIG_ENDPOINT`
+- **Fabric deploy** (`fabricapi_fabric_deploy`): deploy a `fabricapi_fabric` — uploads real device credentials, SSH-validates switches/servers (hard-fails on any failure), pushes credentials to inventory, pushes generated config to real switches, marks the fabric Deployed; matches the ONES UI's "Deploy Fabric" sequence (`uploadip` → `validateswitch`/`validateserver` → `updateinventory` → `/api/config` → `updatefabricstatus`). UFM/NMX/border-leaf-port flows aren't implemented. No known undeploy API, so destroy only removes it from state
 
 ### Data sources
 

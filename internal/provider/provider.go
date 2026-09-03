@@ -195,6 +195,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewVpcPeeringResource,
 		NewAuthLogoutResource,
 		NewFabricResource,
+		NewFabricDeployResource,
 	}
 }
 

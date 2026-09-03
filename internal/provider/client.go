@@ -1690,6 +1690,403 @@ func (c *APIClient) DeleteFabricData(ctx context.Context, name string) (string, 
 	return bodyStr, nil
 }
 
+// GetFabricYaml fetches the raw generated fabric YAML: GET {config_endpoint}/fabrics/{name}.
+// This is the same file the ONES UI fetches (and re-parses) right before pushing it via
+// PushFabricConfig — it's written server-side by addFabricData's topology generation step,
+// so the fabric must already exist (via CreateFabricData) before this call succeeds. Note
+// this path is mounted at the config service's root, not under /api.
+func (c *APIClient) GetFabricYaml(ctx context.Context, name string) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("fabric name is required")
+	}
+	u := fmt.Sprintf("%s/fabrics/%s", base, url.PathEscape(name))
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodGet, u, nil, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	if status < 200 || status >= 300 {
+		body := strings.TrimSpace(string(respBody))
+		if body == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, body)
+	}
+
+	return string(respBody), nil
+}
+
+// PushFabricConfigRequest matches POST {config_endpoint}/api/config — step 1 of the ONES
+// UI's "Deploy Fabric" action: pushing the fabric's generated config to the real switches.
+// Data should be the parsed contents of GetFabricYaml's output (e.g. via yaml.Unmarshal into
+// a generic map), matching what the UI does with js-yaml before sending this request.
+type PushFabricConfigRequest struct {
+	Data       any    `json:"data"`
+	FabricName string `json:"fabricName"`
+	Instance   string `json:"instance"`
+}
+
+// PushFabricConfig POSTs {config_endpoint}/api/config. The response body from this endpoint
+// is a plain string/token from the downstream FM engine, not a JSON envelope, so it's
+// returned as-is.
+func (c *APIClient) PushFabricConfig(ctx context.Context, fabricName, instance string, data any) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	fabricName = strings.TrimSpace(fabricName)
+	if fabricName == "" {
+		return "", fmt.Errorf("fabric name is required")
+	}
+	u := base + "/api/config"
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	reqBody := PushFabricConfigRequest{
+		Data:       data,
+		FabricName: fabricName,
+		Instance:   instance,
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, reqBody, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, nil
+}
+
+// UpdateFabricStatusRequest matches POST {config_endpoint}/api/config/updatefabricstatus —
+// step 2 of the ONES UI's "Deploy Fabric" action: marking the fabric Deployed after
+// PushFabricConfig succeeds. Status is normally the literal string "Deployed".
+type UpdateFabricStatusRequest struct {
+	Name           string `json:"name"`
+	Status         string `json:"status"`
+	Description    string `json:"description"`
+	DeploymentType string `json:"deploymentType"`
+}
+
+// UpdateFabricStatus POSTs {config_endpoint}/api/config/updatefabricstatus.
+func (c *APIClient) UpdateFabricStatus(ctx context.Context, reqBody UpdateFabricStatusRequest) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	if strings.TrimSpace(reqBody.Name) == "" {
+		return "", fmt.Errorf("fabric name is required")
+	}
+	u := base + "/api/config/updatefabricstatus"
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, reqBody, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, nil
+}
+
+// FabricDeviceInput is one switch/server/DPU's connection info, shared across the
+// uploadip, validateswitch, validateserver, and updateinventory calls in the fabric deploy
+// sequence (see FabricDeployResource). Each endpoint wants a slightly different wire shape,
+// built by the helper functions below.
+type FabricDeviceInput struct {
+	Hostname    string
+	IP          string
+	Username    string
+	Password    string
+	DeviceType  string // e.g. "switch", "server", "dpu"
+	DeviceRole  string // e.g. "spine", "leaf", "host"
+	ApplyConfig bool
+}
+
+// yesNo matches the "Yes"/"No" string convention used by the ONES UI's device
+// import spreadsheet (applyConfig/configure columns), which the backend expects verbatim.
+func yesNo(b bool) string {
+	if b {
+		return "Yes"
+	}
+	return "No"
+}
+
+type uploadIPDeviceEntry struct {
+	Hostname string `json:"hostname"`
+	IP       string `json:"ip"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+	// ApplyConfig/Applyconfig: both casings are sent because the ONES UI's own request
+	// body includes both (confirmed against its source) — the backend's exact usage of
+	// each isn't documented, so both are set to the same value to match observed behavior.
+	ApplyConfig string `json:"applyConfig"`
+	Applyconfig string `json:"applyconfig"`
+	Configure   string `json:"configure"`
+}
+
+// UploadFabricDeviceIPsRequest matches POST {config_endpoint}/api/config/uploadip.
+type UploadFabricDeviceIPsRequest struct {
+	UpdatedDevices []uploadIPDeviceEntry `json:"updatedDevices"`
+	FabricName     string                `json:"fabricName"`
+}
+
+// UploadFabricDeviceIPs fills in real IP/username/password for a fabric's devices,
+// patching them into the generated YAML on disk. This is step 1 of the deploy sequence,
+// matching the ONES UI's device-import step on the fabric's Deploy tab.
+func (c *APIClient) UploadFabricDeviceIPs(ctx context.Context, fabricName string, devices []FabricDeviceInput) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	fabricName = strings.TrimSpace(fabricName)
+	if fabricName == "" {
+		return "", fmt.Errorf("fabric name is required")
+	}
+	u := base + "/api/config/uploadip"
+
+	entries := make([]uploadIPDeviceEntry, 0, len(devices))
+	for _, d := range devices {
+		applyConfig := yesNo(d.ApplyConfig)
+		entries = append(entries, uploadIPDeviceEntry{
+			Hostname:    d.Hostname,
+			IP:          d.IP,
+			Username:    d.Username,
+			Password:    d.Password,
+			ApplyConfig: applyConfig,
+			Applyconfig: applyConfig,
+			Configure:   applyConfig,
+		})
+	}
+	reqBody := UploadFabricDeviceIPsRequest{
+		UpdatedDevices: entries,
+		FabricName:     fabricName,
+	}
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, reqBody, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, nil
+}
+
+type validateDeviceEntry struct {
+	Hostname    string `json:"hostname"`
+	IP          string `json:"ip"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	DeviceType  string `json:"deviceType,omitempty"`
+	DeviceRole  string `json:"deviceRole,omitempty"`
+	ApplyConfig string `json:"applyConfig,omitempty"`
+	FabricName  string `json:"fabricName,omitempty"`
+}
+
+// ValidateDeviceResult is one element of the validateswitch/validateserver response array.
+// A successful switch check sets Build; a successful server check sets OS; a failed check
+// sets Error.
+type ValidateDeviceResult struct {
+	Hostname string `json:"hostname"`
+	IP       string `json:"ip"`
+	Username string `json:"username"`
+	Build    string `json:"build,omitempty"`
+	OS       string `json:"os,omitempty"`
+	Error    string `json:"error,omitempty"`
+}
+
+func buildValidateDeviceEntries(fabricName string, devices []FabricDeviceInput) []validateDeviceEntry {
+	entries := make([]validateDeviceEntry, 0, len(devices))
+	for _, d := range devices {
+		entries = append(entries, validateDeviceEntry{
+			Hostname:    d.Hostname,
+			IP:          d.IP,
+			Username:    d.Username,
+			Password:    d.Password,
+			DeviceType:  d.DeviceType,
+			DeviceRole:  d.DeviceRole,
+			ApplyConfig: yesNo(d.ApplyConfig),
+			FabricName:  fabricName,
+		})
+	}
+	return entries
+}
+
+func (c *APIClient) validateDevices(ctx context.Context, path string, entries []validateDeviceEntry) ([]ValidateDeviceResult, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return nil, fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	u := base + path
+
+	if err := c.ensureToken(ctx); err != nil {
+		return nil, err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, entries, 60*time.Minute, headers)
+	if err != nil {
+		return nil, err
+	}
+
+	if status < 200 || status >= 300 {
+		body := strings.TrimSpace(string(respBody))
+		if body == "" {
+			return nil, fmt.Errorf("API returned %d", status)
+		}
+		return nil, fmt.Errorf("API returned %d: %s", status, body)
+	}
+
+	var results []ValidateDeviceResult
+	if err := json.Unmarshal(respBody, &results); err != nil {
+		return nil, fmt.Errorf("decode validate response: %w (body=%s)", err, strings.TrimSpace(string(respBody)))
+	}
+	return results, nil
+}
+
+// ValidateSwitches POSTs {config_endpoint}/api/config/validateswitch — SSHes into each
+// spine/leaf device and checks reachability/build. A device without Build set (and no
+// Error) should be treated as a validation failure by the caller.
+func (c *APIClient) ValidateSwitches(ctx context.Context, fabricName string, devices []FabricDeviceInput) ([]ValidateDeviceResult, error) {
+	return c.validateDevices(ctx, "/api/config/validateswitch", buildValidateDeviceEntries(fabricName, devices))
+}
+
+// ValidateServers POSTs {config_endpoint}/api/config/validateserver — SSHes into each
+// host/DPU device and checks OS/container state. A device without OS set (and no Error)
+// should be treated as a validation failure by the caller.
+func (c *APIClient) ValidateServers(ctx context.Context, fabricName string, devices []FabricDeviceInput) ([]ValidateDeviceResult, error) {
+	return c.validateDevices(ctx, "/api/config/validateserver", buildValidateDeviceEntries(fabricName, devices))
+}
+
+type updateInventoryEntry struct {
+	FabricName string `json:"fabricName"`
+	Hostname   string `json:"hostname"`
+	IPAddress  string `json:"ipAddress"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	Configure  string `json:"configure"`
+}
+
+// UpdateFabricInventory POSTs {config_endpoint}/api/config/updateinventory, pushing device
+// credentials to the downstream FM engine's inventory. This runs after validation succeeds
+// and just before the final config push.
+func (c *APIClient) UpdateFabricInventory(ctx context.Context, fabricName string, devices []FabricDeviceInput) (string, error) {
+	base := strings.TrimRight(c.ConfigEndpoint, "/")
+	if base == "" {
+		return "", fmt.Errorf(
+			"config endpoint not configured; set provider attribute `config_endpoint` or environment variable `FABRIC_API_CONFIG_ENDPOINT`",
+		)
+	}
+	fabricName = strings.TrimSpace(fabricName)
+	if fabricName == "" {
+		return "", fmt.Errorf("fabric name is required")
+	}
+	u := base + "/api/config/updateinventory"
+
+	entries := make([]updateInventoryEntry, 0, len(devices))
+	for _, d := range devices {
+		entries = append(entries, updateInventoryEntry{
+			FabricName: fabricName,
+			Hostname:   d.Hostname,
+			IPAddress:  d.IP,
+			Username:   d.Username,
+			Password:   d.Password,
+			Configure:  yesNo(d.ApplyConfig),
+		})
+	}
+
+	if err := c.ensureToken(ctx); err != nil {
+		return "", err
+	}
+
+	headers := map[string]string{
+		"Authorization": rawTokenHeaderValue(c.Token),
+	}
+
+	respBody, status, err := c.doRequestRawWithHeaders(ctx, http.MethodPost, u, entries, 60*time.Minute, headers)
+	if err != nil {
+		return "", err
+	}
+
+	bodyStr := strings.TrimSpace(string(respBody))
+	if status < 200 || status >= 300 {
+		if bodyStr == "" {
+			return "", fmt.Errorf("API returned %d", status)
+		}
+		return "", fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+
+	return bodyStr, nil
+}
+
 func (c *APIClient) WaitForTenantReady(
 	ctx context.Context,
 	fabric string,
