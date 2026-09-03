@@ -1,10 +1,13 @@
 package provider
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
@@ -57,6 +60,18 @@ type FabricDeployDeviceModel struct {
 	DeviceType  types.String `tfsdk:"device_type"`
 	DeviceRole  types.String `tfsdk:"device_role"`
 	ApplyConfig types.Bool   `tfsdk:"apply_config"`
+}
+
+// fabricDeployDeviceAttrTypes mirrors the "devices" NestedObject schema below — used to
+// rebuild data.Devices from a resolved []FabricDeployDeviceModel before writing state.
+var fabricDeployDeviceAttrTypes = map[string]attr.Type{
+	"hostname":     types.StringType,
+	"ip":           types.StringType,
+	"username":     types.StringType,
+	"password":     types.StringType,
+	"device_type":  types.StringType,
+	"device_role":  types.StringType,
+	"apply_config": types.BoolType,
 }
 
 type FabricDeployResourceModel struct {
@@ -202,6 +217,69 @@ func failedDeviceValidations(results []ValidateDeviceResult, missingSuccess func
 	return failures
 }
 
+// yamlNodeToOrderedJSON converts a parsed *yaml.Node into JSON, preserving mapping key
+// order and sequence order exactly as they appeared in the source document. This matters
+// because json.Marshal on a generic map[string]any always sorts keys alphabetically —
+// using that here would silently reorder every key in the fabric's YAML on every deploy,
+// even though only device credentials (patched by UploadFabricDeviceIPs) actually changed.
+func yamlNodeToOrderedJSON(node *yaml.Node) (json.RawMessage, error) {
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if len(node.Content) == 0 {
+			return json.RawMessage("null"), nil
+		}
+		return yamlNodeToOrderedJSON(node.Content[0])
+	case yaml.MappingNode:
+		var buf bytes.Buffer
+		buf.WriteByte('{')
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			keyJSON, err := json.Marshal(node.Content[i].Value)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(keyJSON)
+			buf.WriteByte(':')
+			valJSON, err := yamlNodeToOrderedJSON(node.Content[i+1])
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(valJSON)
+		}
+		buf.WriteByte('}')
+		return json.RawMessage(buf.Bytes()), nil
+	case yaml.SequenceNode:
+		var buf bytes.Buffer
+		buf.WriteByte('[')
+		for i, item := range node.Content {
+			if i > 0 {
+				buf.WriteByte(',')
+			}
+			itemJSON, err := yamlNodeToOrderedJSON(item)
+			if err != nil {
+				return nil, err
+			}
+			buf.Write(itemJSON)
+		}
+		buf.WriteByte(']')
+		return json.RawMessage(buf.Bytes()), nil
+	case yaml.AliasNode:
+		return yamlNodeToOrderedJSON(node.Alias)
+	default: // yaml.ScalarNode
+		var v any
+		if err := node.Decode(&v); err != nil {
+			return nil, err
+		}
+		scalarJSON, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		return json.RawMessage(scalarJSON), nil
+	}
+}
+
 func (r *FabricDeployResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data FabricDeployResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -236,11 +314,14 @@ func (r *FabricDeployResource) Create(ctx context.Context, req resource.CreateRe
 	}
 
 	devices := make([]FabricDeviceInput, 0, len(deviceModels))
-	for _, dm := range deviceModels {
+	for i, dm := range deviceModels {
 		applyConfig := true
 		if !dm.ApplyConfig.IsNull() && !dm.ApplyConfig.IsUnknown() {
 			applyConfig = dm.ApplyConfig.ValueBool()
 		}
+		// apply_config is Optional+Computed: resolve it back into the model so the list
+		// written to state below has no unknown values (required by the framework).
+		deviceModels[i].ApplyConfig = types.BoolValue(applyConfig)
 		devices = append(devices, FabricDeviceInput{
 			Hostname:    dm.Hostname.ValueString(),
 			IP:          dm.IP.ValueString(),
@@ -323,12 +404,20 @@ func (r *FabricDeployResource) Create(ctx context.Context, req resource.CreateRe
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to fetch generated fabric YAML for %q: %s", fabricName, err))
 		return
 	}
-	var parsed map[string]any
-	if err := yaml.Unmarshal([]byte(rawYAML), &parsed); err != nil {
+	// Parsed as a yaml.Node (not a generic map) so key/sequence order from the fetched
+	// document is preserved exactly — json.Marshal on a map always sorts keys, which would
+	// reformat the whole document even though only device credentials actually changed.
+	var doc yaml.Node
+	if err := yaml.Unmarshal([]byte(rawYAML), &doc); err != nil {
 		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to parse generated fabric YAML for %q: %s", fabricName, err))
 		return
 	}
-	pushResp, err := r.client.PushFabricConfig(ctx, fabricName, instance, parsed)
+	orderedJSON, err := yamlNodeToOrderedJSON(&doc)
+	if err != nil {
+		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to convert generated fabric YAML for %q to JSON: %s", fabricName, err))
+		return
+	}
+	pushResp, err := r.client.PushFabricConfig(ctx, fabricName, instance, orderedJSON)
 	if err != nil {
 		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to push config for fabric %q: %s", fabricName, err))
 		return
@@ -354,6 +443,13 @@ func (r *FabricDeployResource) Create(ctx context.Context, req resource.CreateRe
 	if statusResp != "" {
 		resp.Diagnostics.AddWarning("Fabric status updated", statusResp)
 	}
+
+	devicesList, diags := types.ListValueFrom(ctx, types.ObjectType{AttrTypes: fabricDeployDeviceAttrTypes}, deviceModels)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.Devices = devicesList
 
 	data.Instance = types.StringValue(instance)
 	data.DeploymentType = types.StringValue(deploymentType)

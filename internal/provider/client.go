@@ -1734,18 +1734,22 @@ func (c *APIClient) GetFabricYaml(ctx context.Context, name string) (string, err
 
 // PushFabricConfigRequest matches POST {config_endpoint}/api/config — step 1 of the ONES
 // UI's "Deploy Fabric" action: pushing the fabric's generated config to the real switches.
-// Data should be the parsed contents of GetFabricYaml's output (e.g. via yaml.Unmarshal into
-// a generic map), matching what the UI does with js-yaml before sending this request.
+// Data must be pre-encoded JSON (json.RawMessage), not a generic Go map/any — json.Marshal
+// on a map[string]any always sorts keys alphabetically, which would silently reorder every
+// key in the fabric's YAML on every deploy. Callers should build Data with an order-
+// preserving conversion (see fabric_deploy_resource.go's yamlNodeToOrderedJSON) from the
+// YAML fetched via GetFabricYaml, so only the fields that actually changed (e.g. device
+// credentials from UploadFabricDeviceIPs) differ from the original document.
 type PushFabricConfigRequest struct {
-	Data       any    `json:"data"`
-	FabricName string `json:"fabricName"`
-	Instance   string `json:"instance"`
+	Data       json.RawMessage `json:"data"`
+	FabricName string          `json:"fabricName"`
+	Instance   string          `json:"instance"`
 }
 
 // PushFabricConfig POSTs {config_endpoint}/api/config. The response body from this endpoint
 // is a plain string/token from the downstream FM engine, not a JSON envelope, so it's
 // returned as-is.
-func (c *APIClient) PushFabricConfig(ctx context.Context, fabricName, instance string, data any) (string, error) {
+func (c *APIClient) PushFabricConfig(ctx context.Context, fabricName, instance string, data json.RawMessage) (string, error) {
 	base := strings.TrimRight(c.ConfigEndpoint, "/")
 	if base == "" {
 		return "", fmt.Errorf(
