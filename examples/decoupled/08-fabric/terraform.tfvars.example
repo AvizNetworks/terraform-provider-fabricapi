@@ -2,16 +2,16 @@
 # Once this file exists, `apply` and `destroy` need no -var flags at all: they both
 # read the same values from terraform.tfvars automatically.
 
-name                = "testAPI7"
+name                = "AkashG"
 type                = "Aviz RA"
 description         = "sdf"
 num_of_sus          = 1
 max_num_of_sus      = 1
-host_map            = { "0" = "1" }
+host_map            = { "0" = "2" }
 starting_subnet_gpu = "192"
 simulation_id       = 1
 enable_ew           = true
-su_host_cnt         = "{0:1}"
+su_host_cnt         = "{0:2}"
 tenant              = "ones"
 
 # Set to true to also push the generated config to real switches and mark the fabric
