@@ -18,6 +18,8 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Per-GPU allocations** (`fabricapi_gpu_allocations`): map/unmap logical GPUs (G0–G7) on servers already attached to a tenant (POST `.../gpuAllocations`)
 - **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
+- **Fabric** (`fabricapi_fabric`): create/delete a fabric via the ONES UI config service (POST `/api/config/addFabricData`, DELETE `/api/config/deletefabricbyname/{name}`) — requires provider `config_endpoint` / `FABRIC_API_CONFIG_ENDPOINT`
+- **Fabric deploy** (`fabricapi_fabric_deploy`): deploy a `fabricapi_fabric` — uploads real device credentials, SSH-validates switches/servers (hard-fails on any failure), pushes credentials to inventory, pushes generated config to real switches, marks the fabric Deployed; matches the ONES UI's "Deploy Fabric" sequence (`uploadip` → `validateswitch`/`validateserver` → `updateinventory` → `/api/config` → `updatefabricstatus`). UFM/NMX/border-leaf-port flows aren't implemented. No known undeploy API, so destroy only removes it from state
 
 ### Data sources
 
@@ -35,6 +37,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
   - `05-available-servers`: lookup free servers before allocate (read-only)
   - `06-vf-interfaces`: lookup HBN VF interfaces on a server (read-only)
   - `07-vf-assign`: bind/unbind a VF to a tenant VLAN
+  - `08-fabric`: create a fabric via the ONES UI config service
 
 - **State files**: each root keeps its own state; use one consistent `tenant_name` across those commands for the same tenant, new state filenames for a different tenant, and follow the guides for VPC peering cleanup. See **How state files relate to tenants** in `README.docker.md` or `README.make.md`.
 

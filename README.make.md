@@ -43,6 +43,7 @@ The provider is configured primarily via environment variables.
 
 - `FABRIC_API_ENDPOINT`: Fabric API base URL (example: `http://localhost:8787`)
 - `FABRIC_NAME`: Fabric name/ID (example: `fabric01`)
+- `FABRIC_API_CONFIG_ENDPOINT`: ONES UI config service base URL, used only by `fabricapi_fabric` (POST `/api/config/addFabricData`). This is a **separate host/port** from `FABRIC_API_ENDPOINT` (example: `https://localhost`).
 
 ### Important: fabric must already exist
 

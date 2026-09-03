@@ -1,0 +1,34 @@
+# Copy to terraform.tfvars (do not commit secrets — auth is via env vars, not here).
+# Once this file exists, `apply` and `destroy` need no -var flags at all: they both
+# read the same values from terraform.tfvars automatically.
+
+name                = "terf1"
+type                = "Aviz RA"
+description         = "sdf"
+num_of_sus          = 1
+max_num_of_sus      = 1
+host_map            = { "0" = "2" }
+starting_subnet_gpu = "192"
+simulation_id       = 1
+enable_ew           = true
+su_host_cnt         = "{0:2}"
+tenant              = "ones"
+
+# Set to true to also push the generated config to real switches and mark the fabric
+# Deployed (fabricapi_fabric_deploy). Leave false to only design/review (Draft).
+deploy              = false
+# deployment_type   = "DEFAULT"  # DEFAULT | PARTIAL_CONFIG | BROWNFIELD
+
+# Only used when deploy = true. Two ways to supply device credentials — pick one:
+#
+# Option A: inline HCL (this is sensitive; keep it out of version control). Example:
+# devices = [
+#   { hostname = "spine-s00",    ip = "10.0.0.1", username = "admin", password = "...", device_role = "spine" },
+#   { hostname = "leaf-su00-r0", ip = "10.0.0.2", username = "admin", password = "...", device_role = "leaf" },
+#   { hostname = "hgx-su00-h00", ip = "10.0.0.3", username = "admin", password = "...", device_role = "host" },
+# ]
+devices = []
+
+# Option B: read from a JSON file instead (copy devices.json.example -> devices.json,
+# fill in real values). Takes precedence over `devices` above when non-empty.
+devices_file = "devices.json"
