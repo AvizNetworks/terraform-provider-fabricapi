@@ -2,7 +2,7 @@
 # Once this file exists, `apply` and `destroy` need no -var flags at all: they both
 # read the same values from terraform.tfvars automatically.
 
-name                = "terf1"
+name                = "AkashG"
 type                = "Aviz RA"
 description         = "sdf"
 num_of_sus          = 1
@@ -32,3 +32,8 @@ devices = []
 # Option B: read from a JSON file instead (copy devices.json.example -> devices.json,
 # fill in real values). Takes precedence over `devices` above when non-empty.
 devices_file = "devices.json"
+
+# Only used when deploy = true. Path to a hand-edited or externally-sourced YAML to deploy
+# instead of the server's own generated one (Scenarios 3 & 4 — see examples/decoupled/README.md).
+# Leave empty ("") to deploy the server's current generated YAML as-is (Scenario 1).
+custom_yaml_path = ""

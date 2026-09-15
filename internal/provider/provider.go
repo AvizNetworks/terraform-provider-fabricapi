@@ -204,5 +204,6 @@ func (p *FabricAPIProvider) DataSources(ctx context.Context) []func() datasource
 		NewTenantsDataSource,
 		NewAvailableServersDataSource,
 		NewVfInterfacesDataSource,
+		NewFabricYamlDataSource,
 	}
 }

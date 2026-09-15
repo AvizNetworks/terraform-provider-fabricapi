@@ -80,6 +80,7 @@ type FabricDeployResourceModel struct {
 	Description    types.String `tfsdk:"description"`
 	DeploymentType types.String `tfsdk:"deployment_type"`
 	Devices        types.List   `tfsdk:"devices"`
+	CustomYaml     types.String `tfsdk:"custom_yaml"`
 
 	ID types.String `tfsdk:"id"`
 }
@@ -110,6 +111,13 @@ func (r *FabricDeployResource) Schema(ctx context.Context, req resource.SchemaRe
 			},
 			"description": schema.StringAttribute{
 				MarkdownDescription: "Description recorded on the fabric when marking it Deployed.",
+				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
+			},
+			"custom_yaml": schema.StringAttribute{
+				MarkdownDescription: "A pre-edited fabric YAML to deploy instead of fetching the server's current generated YAML (GET /fabrics/{name}). Use `data.fabricapi_fabric_yaml.this.yaml` to review the auto-generated YAML first, hand-edit it, then pass the edited content back in here (e.g. `custom_yaml = file(\"fabric.reviewed.yaml\")`) — or supply a YAML from elsewhere entirely to deploy without ever fetching the generated one. Leave unset to use the server's current YAML as-is.",
 				Optional:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -398,11 +406,19 @@ func (r *FabricDeployResource) Create(ctx context.Context, req resource.CreateRe
 		resp.Diagnostics.AddWarning("Fabric inventory updated", inventoryResp)
 	}
 
-	// Step 5: fetch the now credential-filled YAML and push it to the switches.
-	rawYAML, err := r.client.GetFabricYaml(ctx, fabricName)
-	if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to fetch generated fabric YAML for %q: %s", fabricName, err))
-		return
+	// Step 5: get the YAML to push to the switches — either the caller's own edited/supplied
+	// YAML (custom_yaml, for the "download, hand-edit, redeploy" and "deploy a YAML from
+	// elsewhere" flows), or the server's current credential-filled generated YAML otherwise.
+	var rawYAML string
+	if !data.CustomYaml.IsNull() && !data.CustomYaml.IsUnknown() && strings.TrimSpace(data.CustomYaml.ValueString()) != "" {
+		rawYAML = data.CustomYaml.ValueString()
+	} else {
+		fetched, err := r.client.GetFabricYaml(ctx, fabricName)
+		if err != nil {
+			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to fetch generated fabric YAML for %q: %s", fabricName, err))
+			return
+		}
+		rawYAML = fetched
 	}
 	// Parsed as a yaml.Node (not a generic map) so key/sequence order from the fetched
 	// document is preserved exactly — json.Marshal on a map always sorts keys, which would

@@ -4,6 +4,10 @@ terraform {
       source  = "local/fabricapi"
       version = "1.0.0"
     }
+    local = {
+      source  = "hashicorp/local"
+      version = "~> 2.5"
+    }
   }
 }
 
@@ -32,11 +36,29 @@ resource "fabricapi_fabric" "this" {
 # The file takes precedence over var.devices when set.
 locals {
   devices_effective = var.devices_file != "" ? jsondecode(file(var.devices_file)) : var.devices
+
+  # Scenario 3/4 support: a hand-edited or externally-sourced YAML overrides the server's
+  # own generated YAML at deploy time. Empty string means "use the server's current YAML".
+  custom_yaml_effective = var.custom_yaml_path != "" ? file(var.custom_yaml_path) : ""
+}
+
+# Scenario 2 — "design a fabric and view the YAML": always fetched (read-only, no side
+# effects), so `terraform apply`/`plan` lets you inspect the generated topology at any time,
+# whether or not you ever deploy. Save it locally for review/hand-editing with:
+#   terraform output -raw generated_yaml > fabric.review.yaml
+data "fabricapi_fabric_yaml" "this" {
+  fabric_name = fabricapi_fabric.this.name
+}
+
+resource "local_file" "generated_yaml" {
+  filename = "${path.module}/fabric.generated.yaml"
+  content  = data.fabricapi_fabric_yaml.this.yaml
 }
 
 # Deploy is a separate, explicit step (opt-in via var.deploy) — it pushes the fabric's
-# generated config onto real switches. Leave var.deploy=false to only design/review the
-# fabric (Draft), same as before this resource existed.
+# generated (or hand-edited, via var.custom_yaml_path) config onto real switches. Leave
+# var.deploy=false to only design/review the fabric (Draft), same as before this resource
+# existed.
 resource "fabricapi_fabric_deploy" "this" {
   count = var.deploy ? 1 : 0
 
@@ -44,10 +66,16 @@ resource "fabricapi_fabric_deploy" "this" {
   description     = var.description
   deployment_type = var.deployment_type
   devices         = local.devices_effective
+  custom_yaml     = local.custom_yaml_effective != "" ? local.custom_yaml_effective : null
 }
 
 output "fabric_id" {
   value = fabricapi_fabric.this.id
+}
+
+output "generated_yaml" {
+  description = "The fabric's current generated YAML — download/review with: terraform output -raw generated_yaml > fabric.review.yaml"
+  value       = data.fabricapi_fabric_yaml.this.yaml
 }
 
 output "fabric_deploy_id" {

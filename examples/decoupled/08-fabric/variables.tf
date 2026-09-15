@@ -101,3 +101,19 @@ variable "devices_file" {
   default = ""
 }
 
+variable "custom_yaml_path" {
+  description = <<-EOT
+    Optional path to a fabric YAML to deploy instead of the server's own generated YAML.
+    Only used when var.deploy is true. Two ways to get here:
+      - Scenario 3 (design -> review -> edit -> deploy): first apply with deploy=false,
+        run `terraform output -raw generated_yaml > fabric.review.yaml`, hand-edit that
+        file, then re-apply with deploy=true and custom_yaml_path="fabric.review.yaml".
+      - Scenario 4 (deploy a YAML from elsewhere): point this at an existing YAML file and
+        set deploy=true on the very first apply — no review step needed.
+    Leave unset (default) for the ordinary flow: deploy the server's current generated YAML
+    as-is (Scenario 1).
+  EOT
+  type    = string
+  default = ""
+}
+

@@ -257,13 +257,23 @@ Fabric is taken from `FABRIC_NAME` / provider `fabric` (set `Get_fab` in env bef
 Manages `fabricapi_fabric` (design) and `fabricapi_fabric_deploy` (deploy), matching the ONES UI's two distinct actions:
 
 - `fabricapi_fabric` — POST `/api/config/addFabricData` to create (Draft, generates a skeleton YAML + inventory with **blank** device credentials), DELETE `/api/config/deletefabricbyname/{name}` to delete.
+- `fabricapi_fabric_yaml` (data source) — GET `/fabrics/{name}`, read-only. Fetches the fabric's current generated YAML for review, with no deploy side effects.
 - `fabricapi_fabric_deploy` — the "Deploy Fabric" button's full sequence:
   1. POST `/api/config/uploadip` — fill in real `ip`/`username`/`password` per device (patches the YAML on disk).
   2. POST `/api/config/validateswitch` — SSH-validate every spine/leaf; **hard-fails the apply** if any device errors or doesn't report a build.
   3. POST `/api/config/validateserver` — SSH-validate every host/DPU; **hard-fails the apply** if any device errors or doesn't report an OS.
   4. POST `/api/config/updateinventory` — push device credentials to the downstream FM engine's inventory.
-  5. GET `/fabrics/{name}` (fetch the now credential-filled YAML) → POST `/api/config` (push it to the real switches).
+  5. Get the YAML to push — either `custom_yaml` if you set it, or GET `/fabrics/{name}` (the server's current credential-filled YAML) otherwise — then POST `/api/config` to push it to the real switches.
   6. POST `/api/config/updatefabricstatus` — mark the fabric `Deployed`.
+
+### Four usage scenarios
+
+| # | Scenario | How |
+|---|----------|-----|
+| 1 | Deploy in one call | `apply` with `deploy=true`, `custom_yaml_path` unset — uses the server's own generated YAML as-is. |
+| 2 | Design only, view the YAML | `apply` with `deploy=false` (default) — `fabricapi_fabric_yaml` is fetched on every apply regardless; read it via `terraform output -raw generated_yaml`. |
+| 3 | Design → review → hand-edit → deploy | Two applies against the same state: (a) `deploy=false`, save the output to a file and edit it; (b) `deploy=true` with `custom_yaml_path` pointing at your edited file. |
+| 4 | Deploy a YAML from elsewhere | One apply: `deploy=true` with `custom_yaml_path` pointing at an existing YAML — no review step needed. |
 
 Notes:
 
@@ -275,7 +285,7 @@ Notes:
 - `var.devices` (per-device `hostname`/`ip`/`username`/`password`/`device_type`/`device_role`/`apply_config`) must cover every device in the fabric's generated inventory — check the `addFabricData` response or the ONES UI's Devices tab for the exact hostnames/roles. It's marked `sensitive` in `variables.tf`; keep real values out of version control (use `terraform.tfvars`, not `-var` on the command line, to avoid them landing in shell history).
 - Alternatively, set `var.devices_file` to a JSON file path (copy `devices.json.example` → `devices.json`, fill in real values) instead of writing `devices` inline — it takes precedence over `var.devices` when set. `devices.json` is gitignored; only the `.example` is tracked.
 
-### Sample commands — design only (Draft)
+### Scenario 2 — design only, view the YAML (Draft)
 
 ```bash
 export FABRIC_API_CONFIG_ENDPOINT="https://YOUR_ONES_UI_HOST"
@@ -293,19 +303,43 @@ terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
   -var="enable_ew=true" \
   -var="su_host_cnt={0:1}" \
   -var="tenant=ones"
+
+# View/save the generated YAML — no deploy happened
+terraform -chdir=examples/decoupled/08-fabric output -raw generated_yaml \
+  -state=states/e2e_fabric.tfstate > fabric.review.yaml
 ```
 
-### Sample commands — design + deploy (pushes config to real switches)
+### Scenario 1 — design + deploy in one call (pushes config to real switches)
 
 `devices` (real per-device credentials) is impractical and unsafe to pass via `-var` on the
 command line — put it, `deploy = true`, and the rest of your values in `terraform.tfvars`
-(copy `terraform.tfvars.example`) instead:
+(copy `terraform.tfvars.example`) instead. Leave `custom_yaml_path` unset to deploy the
+server's own generated YAML as-is:
 
 ```bash
 terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
   -state=states/e2e_fabric.tfstate \
   -var-file=terraform.tfvars
 ```
+
+### Scenario 3 — design → review → hand-edit → deploy
+
+Continues from Scenario 2's `fabric.review.yaml` — edit that file, then redeploy with it:
+
+```bash
+terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
+  -state=states/e2e_fabric.tfstate \
+  -var-file=terraform.tfvars \
+  -var="deploy=true" \
+  -var="custom_yaml_path=fabric.review.yaml"
+```
+
+### Scenario 4 — deploy a YAML from elsewhere
+
+Same as Scenario 3, minus the review step — point `custom_yaml_path` at an existing YAML
+(from another fabric, hand-authored, or exported from somewhere else) on the very first
+`deploy=true` apply. No `fabricapi_fabric_yaml` fetch is needed for this path; `custom_yaml`
+takes precedence over it entirely when set.
 
 ### Sample commands — delete (destroy)
 
