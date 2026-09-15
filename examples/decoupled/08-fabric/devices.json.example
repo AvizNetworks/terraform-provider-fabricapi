@@ -1,0 +1,5 @@
+[
+  { "hostname": "spine-s00", "ip": "10.0.0.1", "username": "admin", "password": "changeme", "device_role": "spine" },
+  { "hostname": "leaf-su00-r0", "ip": "10.0.0.2", "username": "admin", "password": "changeme", "device_role": "leaf" },
+  { "hostname": "hgx-su00-h00", "ip": "10.0.0.3", "username": "root", "password": "changeme", "device_role": "host" }
+]

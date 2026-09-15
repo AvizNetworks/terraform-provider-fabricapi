@@ -1,0 +1,10 @@
+[
+  { "hostname": "spine-s00", "ip": "192.168.122.2", "username": "cumulus", "password": "YourPaSsWoRd1$", "device_role": "spine" },
+  { "hostname": "spine-s01", "ip": "192.168.122.3", "username": "cumulus", "password": "YourPaSsWoRd1$", "device_role": "spine" },
+  { "hostname": "leaf-su00-r0", "ip": "192.168.122.4", "username": "cumulus", "password": "YourPaSsWoRd1$", "device_role": "leaf" },
+  { "hostname": "leaf-su00-r1", "ip": "192.168.122.5", "username": "cumulus", "password": "YourPaSsWoRd1$", "device_role": "leaf" },
+  { "hostname": "leaf-su00-r2", "ip": "192.168.122.6", "username": "cumulus", "password": "YourPaSsWoRd1$", "device_role": "leaf" },
+  { "hostname": "leaf-su00-r3", "ip": "192.168.122.7", "username": "cumulus", "password": "YourPaSsWoRd1$", "device_role": "leaf" },
+  { "hostname": "hgx-su00-h00", "ip": "192.168.122.8", "username": "root", "password": "admin@123", "device_role": "host" },
+  { "hostname": "hgx-su00-h01", "ip": "192.168.122.9", "username": "root", "password": "admin@123", "device_role": "host" }
+]
