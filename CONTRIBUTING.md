@@ -61,6 +61,7 @@ The recommended workflow is the decoupled examples:
 - `examples/decoupled/02-servers`
 - `examples/decoupled/03-vpcpeering`
 - `examples/decoupled/04-gpu-allocations`
+- `examples/decoupled/04-gpus`
 - `examples/decoupled/05-available-servers`
 - `examples/decoupled/06-vf-interfaces`
 - `examples/decoupled/07-vf-assign`
