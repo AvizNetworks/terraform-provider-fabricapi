@@ -87,6 +87,7 @@ The most copy/paste friendly workflow is under `examples/decoupled/` where each 
 - `examples/decoupled/02-servers` — whole-server allocate/deallocate (PATCH tenant)
 - `examples/decoupled/03-vpcpeering` — VPC peering
 - `examples/decoupled/04-gpu-allocations` — per-GPU ADD/DELETE (POST `gpuAllocations`; externally managed fabrics)
+- `examples/decoupled/04-gpus` — external GPU-port ADD/DELETE on UFM/NMX-C fabrics (POST `/gpus`)
 - `examples/decoupled/05-available-servers` — free server lookup (GET `available_servers`)
 - `examples/decoupled/06-vf-interfaces` — HBN VF lookup (GET `vf-interfaces`)
 - `examples/decoupled/07-vf-assign` — HBN VF bind/unbind (POST/DELETE `vf-interfaces/{vfId}/assign`)
@@ -98,6 +99,7 @@ terraform -chdir=examples/decoupled/01-tenant init -upgrade
 terraform -chdir=examples/decoupled/02-servers init -upgrade
 terraform -chdir=examples/decoupled/03-vpcpeering init -upgrade
 terraform -chdir=examples/decoupled/04-gpu-allocations init -upgrade
+terraform -chdir=examples/decoupled/04-gpus init -upgrade
 terraform -chdir=examples/decoupled/05-available-servers init -upgrade
 terraform -chdir=examples/decoupled/06-vf-interfaces init -upgrade
 terraform -chdir=examples/decoupled/07-vf-assign init -upgrade
@@ -136,6 +138,7 @@ mkdir -p ./examples/decoupled/01-tenant/states
 mkdir -p ./examples/decoupled/02-servers/states
 mkdir -p ./examples/decoupled/03-vpcpeering/states
 mkdir -p ./examples/decoupled/04-gpu-allocations/states
+mkdir -p ./examples/decoupled/04-gpus/states
 mkdir -p ./examples/decoupled/05-available-servers/states
 mkdir -p ./examples/decoupled/06-vf-interfaces/states
 mkdir -p ./examples/decoupled/07-vf-assign/states
@@ -150,6 +153,7 @@ Each decoupled root uses **its own** `-state=...` file. Together they describe *
 | `01-tenant` | `e2e_tenant.tfstate` | Managed resource |
 | `02-servers` | `e2e_servers.tfstate` | Whole-server allocate/deallocate |
 | `04-gpu-allocations` | `e2e_gpu_alloc.tfstate` | Per-GPU ADD/DELETE (external fabrics) |
+| `04-gpus` | `e2e_tenant_gpus.tfstate` | External GPU-port ADD/DELETE (UFM/NMX-C)|
 | `05-available-servers` | `e2e_available_servers.tfstate` | Read-only lookup; refreshed each apply |
 | `06-vf-interfaces` | `e2e_vf_interfaces.tfstate` | Read-only HBN VF lookup; refreshed each apply |
 | `07-vf-assign` | `e2e_vf_assign.tfstate` | HBN VF assign; destroy to unbind |
@@ -353,6 +357,7 @@ rm -f ./examples/decoupled/01-tenant/.terraform.lock.hcl
 rm -f ./examples/decoupled/02-servers/.terraform.lock.hcl
 rm -f ./examples/decoupled/03-vpcpeering/.terraform.lock.hcl
 rm -f ./examples/decoupled/04-gpu-allocations/.terraform.lock.hcl
+rm -f ./examples/decoupled/04-gpus/.terraform.lock.hcl
 rm -f ./examples/decoupled/05-available-servers/.terraform.lock.hcl
 rm -f ./examples/decoupled/06-vf-interfaces/.terraform.lock.hcl
 rm -f ./examples/decoupled/07-vf-assign/.terraform.lock.hcl
@@ -361,6 +366,7 @@ terraform -chdir=./examples/decoupled/01-tenant init -upgrade
 terraform -chdir=./examples/decoupled/02-servers init -upgrade
 terraform -chdir=./examples/decoupled/03-vpcpeering init -upgrade
 terraform -chdir=./examples/decoupled/04-gpu-allocations init -upgrade
+terraform -chdir=./examples/decoupled/04-gpus init -upgrade
 terraform -chdir=./examples/decoupled/05-available-servers init -upgrade
 terraform -chdir=./examples/decoupled/06-vf-interfaces init -upgrade
 terraform -chdir=./examples/decoupled/07-vf-assign init -upgrade

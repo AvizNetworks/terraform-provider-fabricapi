@@ -99,6 +99,39 @@ variable "manage_tenant" {
   default     = true
 }
 
+variable "gpu_port_server_names" {
+  description = <<-EOT
+    Server names for fabricapi_tenant_gpus (POST /fabrics/{fabric}/tenants/{tenant}/gpus).
+    Separate from `servers` above (PATCH /tenants/{tenant}, whole-server allocation). Set
+    var.gpu_ids to target specific GPUs; omit var.gpu_ids (its default) to act on the whole
+    server. gpu_ids is never sent as an empty list - it is either absent or non-empty.
+  EOT
+  type        = list(string)
+  default     = []
+}
+
+variable "gpu_ids" {
+  description = "Optional 1-based GPU port indices on gpu_port_server_names (maps to API's gpuIds). Omit this variable (default []) to act on the whole server; if set, it must contain at least one GPU id - the API rejects an empty gpuIds list."
+  type        = list(number)
+  default     = []
+}
+
+variable "gpu_port_operation" {
+  description = "Operation for fabricapi_tenant_gpus: ADD or DELETE (the server's GpuAction enum only has these two values)."
+  type        = string
+  default     = "ADD"
+  validation {
+    condition     = contains(["ADD", "DELETE"], var.gpu_port_operation)
+    error_message = "gpu_port_operation must be ADD or DELETE."
+  }
+}
+
+variable "gpu_membership" {
+  description = "UFM-only PKey partition membership for fabricapi_tenant_gpus: \"full\" or \"limited\". Leave empty for NMXC fabrics or to use the backend default."
+  type        = string
+  default     = ""
+}
+
 variable "import_existing_tenant" {
   description = "Set to true if you want to import an existing tenant into Terraform state"
   type        = bool

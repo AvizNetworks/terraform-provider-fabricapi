@@ -14,10 +14,12 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 ### Resources
 
 - **Tenants** (`fabricapi_tenant`): create/read/delete
-- **Tenant servers** (`fabricapi_tenant_servers`): allocate/deallocate whole GPU servers (PATCH tenant)
+- **Tenant servers** (`fabricapi_tenant_servers`): allocate/deallocate whole GPU servers (PATCH tenant). `shared=false` dedicates the server's E-W (UFM/NMX-C) GPUs to the tenant (ONES-managed); `shared=true` leaves them free for external assignment via `fabricapi_tenant_gpus`.
 - **Per-GPU allocations** (`fabricapi_gpu_allocations`): map/unmap logical GPUs (G0–G7) on servers already attached to a tenant (POST `.../gpuAllocations`)
+- **Tenant GPU ports** (`fabricapi_tenant_gpus`): assign/remove GPU ports for a tenant on externally-managed UFM/NMX-C fabrics (POST `.../tenants/{tenant}/gpus`); whole-server (`server_names`) or specific `gpu_ids`, optional UFM `membership`
 - **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
+- **Inventory sync** (`fabricapi_inventory_sync`): force an immediate UFM inventory reconcile (POST `.../fabrics/{fabric}/inventorySync`)
 
 ### Data sources
 
@@ -32,6 +34,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
   - `02-servers`: whole-server GPU allocation/deallocation
   - `03-vpcpeering`: VPC peering
   - `04-gpu-allocations`: per-GPU allocation/deallocation on shared servers
+  - `04-gpus`: external GPU-port assign/remove on UFM/NMX-C fabrics
   - `05-available-servers`: lookup free servers before allocate (read-only)
   - `06-vf-interfaces`: lookup HBN VF interfaces on a server (read-only)
   - `07-vf-assign`: bind/unbind a VF to a tenant VLAN
