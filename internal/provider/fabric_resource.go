@@ -40,7 +40,7 @@ type FabricResourceModel struct {
 	SimulationID      types.Int64  `tfsdk:"simulation_id"`
 	EnableEW          types.Bool   `tfsdk:"enable_ew"`
 	SuHostCnt         types.String `tfsdk:"su_host_cnt"`
-	Tenant            types.String `tfsdk:"tenant"`
+	TenantCtrl        types.String `tfsdk:"tenant_ctrl"`
 	Instance          types.String `tfsdk:"instance"`
 
 	ID types.String `tfsdk:"id"`
@@ -89,8 +89,9 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Required: true,
 			},
 			"host_map": schema.MapAttribute{
-				MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}).",
-				Required:            true,
+				MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `su_host_cnt` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
+				Optional:            true,
+				Computed:            true,
 				ElementType:         types.StringType,
 			},
 			"starting_subnet_gpu": schema.StringAttribute{
@@ -105,10 +106,10 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Computed:            true,
 			},
 			"su_host_cnt": schema.StringAttribute{
-				MarkdownDescription: "Raw `suHostCnt` value expected by the API, e.g. \"{0:1}\". Sent exactly as provided.",
+				MarkdownDescription: "Raw `suHostCnt` value expected by the API, e.g. \"{0:1}\". Sent exactly as provided, and also used to derive `host_map` when that attribute is left unset.",
 				Required:            true,
 			},
-			"tenant": schema.StringAttribute{
+			"tenant_ctrl": schema.StringAttribute{
 				Required: true,
 			},
 			"instance": schema.StringAttribute{
@@ -166,6 +167,17 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 			return
 		}
 	}
+	if len(hostMap) == 0 {
+		derived, err := hostMapFromSuHostCnt(data.SuHostCnt.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Invalid su_host_cnt",
+				fmt.Sprintf("Unable to derive host_map from su_host_cnt %q: %s", data.SuHostCnt.ValueString(), err),
+			)
+			return
+		}
+		hostMap = derived
+	}
 
 	reqBody := FabricDataRequest{
 		Name:              data.Name.ValueString(),
@@ -179,7 +191,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		SimulationID:      int(data.SimulationID.ValueInt64()),
 		EnableEW:          enableEW,
 		SuHostCnt:         data.SuHostCnt.ValueString(),
-		Tenant:            data.Tenant.ValueString(),
+		Tenant:            data.TenantCtrl.ValueString(),
 		Instance:          instance,
 	}
 
@@ -197,7 +209,44 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.EnableEW = types.BoolValue(enableEW)
 	data.ID = types.StringValue(data.Name.ValueString())
 
+	hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, hostMap)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.HostMap = hostMapValue
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// hostMapFromSuHostCnt parses the API's "{0:1,1:2}" suHostCnt shorthand into
+// the hostMap field shape the same addFabricData call also expects (both
+// fields carry the same SU-index -> host-count data, in two formats).
+func hostMapFromSuHostCnt(raw string) (map[string]string, error) {
+	trimmed := strings.TrimSpace(raw)
+	trimmed = strings.TrimPrefix(trimmed, "{")
+	trimmed = strings.TrimSuffix(trimmed, "}")
+	trimmed = strings.TrimSpace(trimmed)
+
+	hostMap := map[string]string{}
+	if trimmed == "" {
+		return hostMap, nil
+	}
+
+	for _, pair := range strings.Split(trimmed, ",") {
+		kv := strings.SplitN(pair, ":", 2)
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("expected \"su:count\" pairs like \"{0:1,1:2}\", got %q", pair)
+		}
+		key := strings.TrimSpace(kv[0])
+		value := strings.TrimSpace(kv[1])
+		if key == "" || value == "" {
+			return nil, fmt.Errorf("expected \"su:count\" pairs like \"{0:1,1:2}\", got %q", pair)
+		}
+		hostMap[key] = value
+	}
+
+	return hostMap, nil
 }
 
 func (r *FabricResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {

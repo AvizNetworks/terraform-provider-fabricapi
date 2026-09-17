@@ -26,8 +26,9 @@ variable "max_num_of_sus" {
 }
 
 variable "host_map" {
-  description = "SU index -> host count map, e.g. { \"0\" = \"1\" }."
+  description = "SU index -> host count map, e.g. { \"0\" = \"1\" }. Optional: leave empty to have the provider derive it from su_host_cnt (both fields carry the same data)."
   type        = map(string)
+  default     = {}
 }
 
 variable "starting_subnet_gpu" {
@@ -51,7 +52,7 @@ variable "su_host_cnt" {
   type        = string
 }
 
-variable "tenant" {
+variable "tenant_ctrl" {
   description = "Tenant context for the addFabricData call, e.g. \"ones\"."
   type        = string
   default     = "ones"

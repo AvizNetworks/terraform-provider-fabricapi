@@ -278,6 +278,7 @@ Manages `fabricapi_fabric` (design) and `fabricapi_fabric_deploy` (deploy), matc
 Notes:
 
 - Requires `config_endpoint` (provider attribute) or `FABRIC_API_CONFIG_ENDPOINT` (env) — a **separate host/port** from `FABRIC_API_ENDPOINT` (the ONES UI/config backend, not the Fabric API on `:8089`).
+- `host_map` is optional — the API needs both `hostMap` and `suHostCnt` carrying the same SU-index→host-count data, so the provider derives `host_map` from `su_host_cnt` automatically (e.g. `su_host_cnt = "{0:1}"` → `host_map = {"0" = "1"}`) when `host_map` is left unset. Set it explicitly only if it needs to differ.
 - There is no known GET endpoint reporting `fabricapi_fabric`'s own state, so its Read is a best-effort no-op. Same for `fabricapi_fabric_deploy`.
 - `terraform destroy` on `fabricapi_fabric` always calls the delete API (unconditional, like `fabricapi_tenant`). `fabricapi_fabric_deploy` has no known "undeploy" API, so its destroy only removes it from Terraform state — the fabric stays Deployed in ONES.
 - **Deploy pushes real config to physical switches and SSHes into real credentials.** In this example it's gated behind `var.deploy` (default `false`) so a plain `apply` only designs/reviews the fabric — set `-var="deploy=true"` (and supply `var.devices`) deliberately when you want to actually push it live.
@@ -297,12 +298,11 @@ terraform -chdir=examples/decoupled/08-fabric apply -auto-approve \
   -var="description=sdf" \
   -var="num_of_sus=1" \
   -var="max_num_of_sus=1" \
-  -var='host_map={"0"="1"}' \
   -var="starting_subnet_gpu=192" \
   -var="simulation_id=1" \
   -var="enable_ew=true" \
   -var="su_host_cnt={0:1}" \
-  -var="tenant=ones"
+  -var="tenant_ctrl=ones"
 
 # View/save the generated YAML — no deploy happened
 terraform -chdir=examples/decoupled/08-fabric output -raw generated_yaml \
@@ -353,12 +353,11 @@ terraform -chdir=examples/decoupled/08-fabric destroy -auto-approve \
   -var="description=sdf" \
   -var="num_of_sus=1" \
   -var="max_num_of_sus=1" \
-  -var='host_map={"0"="1"}' \
   -var="starting_subnet_gpu=192" \
   -var="simulation_id=1" \
   -var="enable_ew=true" \
   -var="su_host_cnt={0:1}" \
-  -var="tenant=ones"
+  -var="tenant_ctrl=ones"
 ```
 
 ---

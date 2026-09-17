@@ -7,12 +7,13 @@ type                = "Aviz RA"
 description         = "sdf"
 num_of_sus          = 1
 max_num_of_sus      = 1
-host_map            = { "0" = "2" }
+# host_map is optional — left unset here, the provider derives it from su_host_cnt below
+# ({"0" = "2"} in this case), since the API requires both fields with the same data.
 starting_subnet_gpu = "192"
 simulation_id       = 1
 enable_ew           = true
 su_host_cnt         = "{0:2}"
-tenant              = "ones"
+tenant_ctrl         = "ones"
 
 # Set to true to also push the generated config to real switches and mark the fabric
 # Deployed (fabricapi_fabric_deploy). Leave false to only design/review (Draft).

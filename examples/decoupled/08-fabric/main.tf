@@ -23,12 +23,12 @@ resource "fabricapi_fabric" "this" {
   description         = var.description
   num_of_sus          = var.num_of_sus
   max_num_of_sus      = var.max_num_of_sus
-  host_map            = var.host_map
+  host_map            = length(var.host_map) > 0 ? var.host_map : null
   starting_subnet_gpu = var.starting_subnet_gpu
   simulation_id       = var.simulation_id
   enable_ew           = var.enable_ew
   su_host_cnt         = var.su_host_cnt
-  tenant              = var.tenant
+  tenant_ctrl         = var.tenant_ctrl
 }
 
 # devices can come from a JSON file (var.devices_file) instead of inline HCL — handy when
