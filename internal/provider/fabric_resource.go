@@ -46,11 +46,9 @@ type FabricResourceModel struct {
 	// North-South (front-end user/storage) networking — see FabricDataRequest
 	// in client.go for how these map onto the addFabricData API fields.
 	EnableNS              types.Bool   `tfsdk:"enable_ns"`
-	IsOnesControlled      types.Bool   `tfsdk:"is_ones_controlled"`
 	DedicatedStorage      types.Bool   `tfsdk:"dedicated_storage"`
 	StartingSubnetCpu     types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage types.String `tfsdk:"starting_subnet_storage"`
-	StartingSubnetTenants types.String `tfsdk:"starting_subnet_tenants"`
 
 	ID types.String `tfsdk:"id"`
 }
@@ -133,11 +131,6 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 				Computed:            true,
 			},
-			"is_ones_controlled": schema.BoolAttribute{
-				MarkdownDescription: "Tenant control mode, matching the ONES UI's \"Tenant control\" radio (ONES vs External). `true` (default) means ONES-managed — `starting_subnet_tenants` is then irrelevant and never sent, since the UI hides that field entirely in this mode. Set to `false` for externally-managed tenants, which makes `starting_subnet_tenants` required whenever `enable_ns` is true. Unrelated to `tenant_ctrl`, which is a separate, always-\"ones\" API field.",
-				Optional:            true,
-				Computed:            true,
-			},
 			"dedicated_storage": schema.BoolAttribute{
 				MarkdownDescription: "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when `enable_ns` is true. Requires `starting_subnet_storage`. Defaults to false if unset.",
 				Optional:            true,
@@ -149,10 +142,6 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"starting_subnet_storage": schema.StringAttribute{
 				MarkdownDescription: "Starting subnet for storage NICs, e.g. \"10.3\". Required when `dedicated_storage` is true.",
-				Optional:            true,
-			},
-			"starting_subnet_tenants": schema.StringAttribute{
-				MarkdownDescription: "Starting subnet for the tenant IP pool, e.g. \"10.4\" — sent to the API with a trailing \".0\" octet appended (matching the ONES UI), so \"10.4\" becomes \"10.4.0\". Only applies when `is_ones_controlled` is false (the UI hides this field entirely otherwise); ignored (never sent) when `is_ones_controlled` is true. Required when `enable_ns` and `!is_ones_controlled` are both true.",
 				Optional:            true,
 			},
 			"id": schema.StringAttribute{
@@ -205,10 +194,11 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !data.EnableNS.IsNull() && !data.EnableNS.IsUnknown() {
 		enableNS = data.EnableNS.ValueBool()
 	}
-	isOnesControlled := true
-	if !data.IsOnesControlled.IsNull() && !data.IsOnesControlled.IsUnknown() {
-		isOnesControlled = data.IsOnesControlled.ValueBool()
-	}
+	// Always ONES-managed — not exposed as an input. The ONES UI's "Tenant
+	// control" radio (isOnesControlled=false, "External") is what unlocks the
+	// "Tenant Compute IP Pool" field (startingSubnetTenants); since that mode
+	// isn't supported here, startingSubnetTenants is never applicable either.
+	const isOnesControlled = true
 	dedicatedStorage := false
 	if !data.DedicatedStorage.IsNull() && !data.DedicatedStorage.IsUnknown() {
 		dedicatedStorage = data.DedicatedStorage.ValueBool()
@@ -253,26 +243,6 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
-	// The ONES UI only renders the "Tenant Compute IP Pool" field, and only
-	// requires it, when isOnesControlled is false (FabricNetwork.jsx:1523,
-	// :775) — in ONES-controlled mode (the default) the field is hidden
-	// entirely, so starting_subnet_tenants is dropped here rather than sent.
-	startingSubnetTenants := ""
-	if !isOnesControlled {
-		if enableNS && strings.TrimSpace(data.StartingSubnetTenants.ValueString()) == "" {
-			resp.Diagnostics.AddError(
-				"Please enter a valid Tenant Subnet",
-				"starting_subnet_tenants is required when enable_ns is true and is_ones_controlled is false.",
-			)
-			return
-		}
-		// Matches the ONES UI (FabricNetwork.jsx), which appends a trailing
-		// ".0" octet to the tenant subnet before sending it to addFabricData.
-		if v := strings.TrimSpace(data.StartingSubnetTenants.ValueString()); v != "" {
-			startingSubnetTenants = v + ".0"
-		}
-	}
-
 	hostMap := map[string]string{}
 	if !data.HostMap.IsNull() && !data.HostMap.IsUnknown() {
 		resp.Diagnostics.Append(data.HostMap.ElementsAs(ctx, &hostMap, false)...)
@@ -314,7 +284,6 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		FrontendStorage:       frontendStorage,
 		StartingSubnetCpu:     startingSubnetCpu,
 		StartingSubnetStorage: startingSubnetStorage,
-		StartingSubnetTenants: startingSubnetTenants,
 	}
 
 	respBody, err := r.client.CreateFabricData(ctx, reqBody)
@@ -331,7 +300,6 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.EnableEW = types.BoolValue(enableEW)
 	data.SimulationID = types.Int64Value(simulationID)
 	data.EnableNS = types.BoolValue(enableNS)
-	data.IsOnesControlled = types.BoolValue(isOnesControlled)
 	data.DedicatedStorage = types.BoolValue(dedicatedStorage)
 	data.ID = types.StringValue(data.Name.ValueString())
 

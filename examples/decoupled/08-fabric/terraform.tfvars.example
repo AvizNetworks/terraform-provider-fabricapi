@@ -14,16 +14,12 @@ enable_ew           = true
 hosts_per_su        = "{0:2}"
 tenant_ctrl         = "ones"
 
-# North-South (front-end user/storage) networking — off by default.
+# North-South (front-end user/storage) networking — off by default. Always ONES-managed
+# (isOnesControlled is not exposed here), so there's no tenant-subnet input either.
 # enable_ns               = true
 # starting_subnet_cpu     = "10.2" # required when enable_ns is true
 # dedicated_storage       = true   # optional; requires starting_subnet_storage
 # starting_subnet_storage = "10.3"
-#
-# starting_subnet_tenants only applies when is_ones_controlled = false (externally-managed
-# tenants) — leave both unset for the default ONES-managed mode.
-# is_ones_controlled      = false
-# starting_subnet_tenants = "10.4"  # sent to the API as "10.4.0"; required when enable_ns is true and is_ones_controlled = false
 
 # Set to true to also push the generated config to real switches and mark the fabric
 # Deployed (fabricapi_fabric_deploy). Leave false to only design/review (Draft).
