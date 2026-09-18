@@ -59,6 +59,12 @@ variable "enable_ns" {
   default     = false
 }
 
+variable "is_ones_controlled" {
+  description = "Tenant control mode, matching the ONES UI's \"Tenant control\" radio (ONES vs External). true (default) is ONES-managed, where starting_subnet_tenants is irrelevant. Set to false for externally-managed tenants, which makes starting_subnet_tenants required whenever enable_ns is true."
+  type        = bool
+  default     = true
+}
+
 variable "dedicated_storage" {
   description = "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when enable_ns is true. Requires starting_subnet_storage."
   type        = bool
@@ -78,7 +84,7 @@ variable "starting_subnet_storage" {
 }
 
 variable "starting_subnet_tenants" {
-  description = "Starting subnet for the tenant (user/storage) IP pool, e.g. \"10.4\" (the provider appends a trailing \".0\" octet before sending it to the API). Only meaningful when enable_ns is true."
+  description = "Starting subnet for the tenant IP pool, e.g. \"10.4\" (the provider appends a trailing \".0\" octet before sending it to the API). Only applies when is_ones_controlled is false; ignored when is_ones_controlled is true (the default)."
   type        = string
   default     = ""
 }
