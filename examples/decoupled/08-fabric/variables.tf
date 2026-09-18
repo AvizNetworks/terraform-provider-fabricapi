@@ -26,7 +26,7 @@ variable "max_num_of_sus" {
 }
 
 variable "host_map" {
-  description = "SU index -> host count map, e.g. { \"0\" = \"1\" }. Optional: leave empty to have the provider derive it from su_host_cnt (both fields carry the same data)."
+  description = "SU index -> host count map, e.g. { \"0\" = \"1\" }. Optional: leave empty to have the provider derive it from hosts_per_su (both fields carry the same data)."
   type        = map(string)
   default     = {}
 }
@@ -36,18 +36,13 @@ variable "starting_subnet_gpu" {
   type        = string
 }
 
-variable "simulation_id" {
-  description = "Simulation id."
-  type        = number
-}
-
 variable "enable_ew" {
   description = "Enable east-west networking."
   type        = bool
   default     = true
 }
 
-variable "su_host_cnt" {
+variable "hosts_per_su" {
   description = "Raw suHostCnt value expected by the API, e.g. \"{0:1}\"."
   type        = string
 }

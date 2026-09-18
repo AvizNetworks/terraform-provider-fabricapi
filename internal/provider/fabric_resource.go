@@ -39,7 +39,7 @@ type FabricResourceModel struct {
 	StartingSubnetGpu types.String `tfsdk:"starting_subnet_gpu"`
 	SimulationID      types.Int64  `tfsdk:"simulation_id"`
 	EnableEW          types.Bool   `tfsdk:"enable_ew"`
-	SuHostCnt         types.String `tfsdk:"su_host_cnt"`
+	HostsPerSu        types.String `tfsdk:"hosts_per_su"`
 	TenantCtrl        types.String `tfsdk:"tenant_ctrl"`
 	Instance          types.String `tfsdk:"instance"`
 
@@ -89,7 +89,7 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Required: true,
 			},
 			"host_map": schema.MapAttribute{
-				MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `su_host_cnt` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
+				MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
 				Optional:            true,
 				Computed:            true,
 				ElementType:         types.StringType,
@@ -98,14 +98,16 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Required: true,
 			},
 			"simulation_id": schema.Int64Attribute{
-				Required: true,
+				MarkdownDescription: "Raw `simulationId` value expected by the API. Defaults to 1 if unset.",
+				Optional:            true,
+				Computed:            true,
 			},
 			"enable_ew": schema.BoolAttribute{
 				MarkdownDescription: "Enable east-west networking. Defaults to false if unset.",
 				Optional:            true,
 				Computed:            true,
 			},
-			"su_host_cnt": schema.StringAttribute{
+			"hosts_per_su": schema.StringAttribute{
 				MarkdownDescription: "Raw `suHostCnt` value expected by the API, e.g. \"{0:1}\". Sent exactly as provided, and also used to derive `host_map` when that attribute is left unset.",
 				Required:            true,
 			},
@@ -159,6 +161,10 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !data.EnableEW.IsNull() && !data.EnableEW.IsUnknown() {
 		enableEW = data.EnableEW.ValueBool()
 	}
+	simulationID := int64(1)
+	if !data.SimulationID.IsNull() && !data.SimulationID.IsUnknown() {
+		simulationID = data.SimulationID.ValueInt64()
+	}
 
 	hostMap := map[string]string{}
 	if !data.HostMap.IsNull() && !data.HostMap.IsUnknown() {
@@ -168,11 +174,11 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		}
 	}
 	if len(hostMap) == 0 {
-		derived, err := hostMapFromSuHostCnt(data.SuHostCnt.ValueString())
+		derived, err := hostMapFromHostsPerSu(data.HostsPerSu.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError(
-				"Invalid su_host_cnt",
-				fmt.Sprintf("Unable to derive host_map from su_host_cnt %q: %s", data.SuHostCnt.ValueString(), err),
+				"Invalid hosts_per_su",
+				fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.HostsPerSu.ValueString(), err),
 			)
 			return
 		}
@@ -188,9 +194,9 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		MaxNumOfSus:       int(data.MaxNumOfSus.ValueInt64()),
 		HostMap:           hostMap,
 		StartingSubnetGpu: data.StartingSubnetGpu.ValueString(),
-		SimulationID:      int(data.SimulationID.ValueInt64()),
+		SimulationID:      int(simulationID),
 		EnableEW:          enableEW,
-		SuHostCnt:         data.SuHostCnt.ValueString(),
+		SuHostCnt:         data.HostsPerSu.ValueString(),
 		Tenant:            data.TenantCtrl.ValueString(),
 		Instance:          instance,
 	}
@@ -207,6 +213,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.Status = types.StringValue(status)
 	data.Instance = types.StringValue(instance)
 	data.EnableEW = types.BoolValue(enableEW)
+	data.SimulationID = types.Int64Value(simulationID)
 	data.ID = types.StringValue(data.Name.ValueString())
 
 	hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, hostMap)
@@ -219,10 +226,11 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-// hostMapFromSuHostCnt parses the API's "{0:1,1:2}" suHostCnt shorthand into
-// the hostMap field shape the same addFabricData call also expects (both
-// fields carry the same SU-index -> host-count data, in two formats).
-func hostMapFromSuHostCnt(raw string) (map[string]string, error) {
+// hostMapFromHostsPerSu parses the API's "{0:1,1:2}" suHostCnt shorthand
+// (Terraform-facing as hosts_per_su) into the hostMap field shape the same
+// addFabricData call also expects (both fields carry the same SU-index ->
+// host-count data, in two formats).
+func hostMapFromHostsPerSu(raw string) (map[string]string, error) {
 	trimmed := strings.TrimSpace(raw)
 	trimmed = strings.TrimPrefix(trimmed, "{")
 	trimmed = strings.TrimSuffix(trimmed, "}")
