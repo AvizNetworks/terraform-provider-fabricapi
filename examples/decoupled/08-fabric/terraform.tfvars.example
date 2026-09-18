@@ -16,7 +16,6 @@ tenant_ctrl         = "ones"
 
 # North-South (front-end user/storage) networking — off by default.
 # enable_ns               = true
-# frontend_storage        = true   # required (must be true) when enable_ns is true
 # starting_subnet_cpu     = "10.2" # required when enable_ns is true
 # dedicated_storage       = true   # optional; requires starting_subnet_storage
 # starting_subnet_storage = "10.3"

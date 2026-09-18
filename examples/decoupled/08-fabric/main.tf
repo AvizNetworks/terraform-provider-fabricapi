@@ -32,7 +32,6 @@ resource "fabricapi_fabric" "this" {
   # North-South (front-end user/storage) networking — all optional, off by default.
   enable_ns               = var.enable_ns
   dedicated_storage       = var.dedicated_storage
-  frontend_storage        = var.frontend_storage
   starting_subnet_cpu     = var.starting_subnet_cpu != "" ? var.starting_subnet_cpu : null
   starting_subnet_storage = var.starting_subnet_storage != "" ? var.starting_subnet_storage : null
   starting_subnet_tenants = var.starting_subnet_tenants != "" ? var.starting_subnet_tenants : null

@@ -47,7 +47,6 @@ type FabricResourceModel struct {
 	// in client.go for how these map onto the addFabricData API fields.
 	EnableNS              types.Bool   `tfsdk:"enable_ns"`
 	DedicatedStorage      types.Bool   `tfsdk:"dedicated_storage"`
-	FrontendStorage       types.Bool   `tfsdk:"frontend_storage"`
 	StartingSubnetCpu     types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage types.String `tfsdk:"starting_subnet_storage"`
 	StartingSubnetTenants types.String `tfsdk:"starting_subnet_tenants"`
@@ -129,22 +128,17 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Computed:            true,
 			},
 			"enable_ns": schema.BoolAttribute{
-				MarkdownDescription: "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, `frontend_storage` and `starting_subnet_cpu` are required. Defaults to false if unset.",
+				MarkdownDescription: "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, `starting_subnet_cpu` is required. Defaults to false if unset.",
 				Optional:            true,
 				Computed:            true,
 			},
 			"dedicated_storage": schema.BoolAttribute{
-				MarkdownDescription: "Use a separate subnet for storage NICs instead of sharing the user/storage subnet. Only meaningful when `enable_ns` is true. Requires `starting_subnet_storage`. Defaults to false if unset.",
-				Optional:            true,
-				Computed:            true,
-			},
-			"frontend_storage": schema.BoolAttribute{
-				MarkdownDescription: "Use a separate subnet for front-end CPU NICs. Required (must be true) when `enable_ns` is true. Requires `starting_subnet_cpu`.",
+				MarkdownDescription: "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when `enable_ns` is true. Requires `starting_subnet_storage`. Defaults to false if unset.",
 				Optional:            true,
 				Computed:            true,
 			},
 			"starting_subnet_cpu": schema.StringAttribute{
-				MarkdownDescription: "Starting subnet for CPU NICs, e.g. \"10.2\". Required when `enable_ns` is true (equivalently, when `frontend_storage` is true).",
+				MarkdownDescription: "Starting subnet for CPU NICs, e.g. \"10.2\". Required when `enable_ns` is true — used as the shared user/storage subnet when `dedicated_storage` is false, or as the dedicated CPU subnet when it's true.",
 				Optional:            true,
 			},
 			"starting_subnet_storage": schema.StringAttribute{
@@ -209,29 +203,42 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !data.DedicatedStorage.IsNull() && !data.DedicatedStorage.IsUnknown() {
 		dedicatedStorage = data.DedicatedStorage.ValueBool()
 	}
-	frontendStorage := false
-	if !data.FrontendStorage.IsNull() && !data.FrontendStorage.IsUnknown() {
-		frontendStorage = data.FrontendStorage.ValueBool()
-	}
+	// The ONES UI's "Dedicated Storage Network" switch (FabricNetwork.jsx) always
+	// toggles dedicatedStorage and frontendStorage together — they are never
+	// independent — so frontendStorage is derived here rather than exposed as its
+	// own attribute. userandstorage covers the "shared" case (NS on, dedicated
+	// storage off): TopologyController.generateTopologyAndYaml forces
+	// userandstorage=false whenever frontendStorage is true, and
+	// StorageFrontendStrategy only builds the storage-leaf nodes (leaf-cn /
+	// leaf-storage) from the userandstorage branch — so setting frontendStorage
+	// unconditionally whenever enable_ns is true (an earlier version of this
+	// resource did this) silently suppressed those leafs.
+	frontendStorage := dedicatedStorage
+	userAndStorage := enableNS && !dedicatedStorage
+	startingSubnetGpu := data.StartingSubnetGpu.ValueString()
 	startingSubnetCpu := data.StartingSubnetCpu.ValueString()
 	startingSubnetStorage := data.StartingSubnetStorage.ValueString()
-	if enableNS && !frontendStorage {
+	// Error text below matches the ONES UI's own validation messages
+	// (selfcare/src/ui-v2/pages/inventory/FabricNetwork.jsx handleSubmit)
+	// where an equivalent check exists, so the same failure reads the same
+	// way whether it's hit from the UI or from this provider.
+	if enableEW && strings.TrimSpace(startingSubnetGpu) == "" {
 		resp.Diagnostics.AddError(
-			"Missing frontend_storage",
-			"frontend_storage must be true when enable_ns is true.",
+			"Please enter a valid GPU Subnet",
+			"starting_subnet_gpu is required when enable_ew is true.",
 		)
 		return
 	}
-	if frontendStorage && strings.TrimSpace(startingSubnetCpu) == "" {
+	if enableNS && strings.TrimSpace(startingSubnetCpu) == "" {
 		resp.Diagnostics.AddError(
-			"Missing starting_subnet_cpu",
-			"starting_subnet_cpu is required when frontend_storage is true.",
+			"Please enter a valid CPU Subnet",
+			"starting_subnet_cpu is required when enable_ns is true (used as the shared user/storage subnet, or the CPU subnet when dedicated_storage is also true).",
 		)
 		return
 	}
 	if dedicatedStorage && strings.TrimSpace(startingSubnetStorage) == "" {
 		resp.Diagnostics.AddError(
-			"Missing starting_subnet_storage",
+			"Please enter a valid Storage Subnet",
 			"starting_subnet_storage is required when dedicated_storage is true.",
 		)
 		return
@@ -279,7 +286,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 
 		EnableNS:              enableNS,
 		IsOnesControlled:      true,
-		UserAndStorage:        enableNS,
+		UserAndStorage:        userAndStorage,
 		DedicatedStorage:      dedicatedStorage,
 		FrontendStorage:       frontendStorage,
 		StartingSubnetCpu:     startingSubnetCpu,
@@ -302,7 +309,6 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.SimulationID = types.Int64Value(simulationID)
 	data.EnableNS = types.BoolValue(enableNS)
 	data.DedicatedStorage = types.BoolValue(dedicatedStorage)
-	data.FrontendStorage = types.BoolValue(frontendStorage)
 	data.ID = types.StringValue(data.Name.ValueString())
 
 	hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, hostMap)

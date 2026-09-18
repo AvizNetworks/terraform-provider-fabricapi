@@ -54,25 +54,19 @@ variable "tenant_ctrl" {
 }
 
 variable "enable_ns" {
-  description = "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, frontend_storage and starting_subnet_cpu are required."
+  description = "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, starting_subnet_cpu is required."
   type        = bool
   default     = false
 }
 
 variable "dedicated_storage" {
-  description = "Use a separate subnet for storage NICs instead of sharing the user/storage subnet. Only meaningful when enable_ns is true. Requires starting_subnet_storage."
-  type        = bool
-  default     = false
-}
-
-variable "frontend_storage" {
-  description = "Use a separate subnet for front-end CPU NICs. Required (must be true) when enable_ns is true. Requires starting_subnet_cpu."
+  description = "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when enable_ns is true. Requires starting_subnet_storage."
   type        = bool
   default     = false
 }
 
 variable "starting_subnet_cpu" {
-  description = "Starting subnet for CPU NICs, e.g. \"10.2\". Required when enable_ns is true."
+  description = "Starting subnet for CPU NICs, e.g. \"10.2\". Required when enable_ns is true — used as the shared user/storage subnet when dedicated_storage is false, or as the dedicated CPU subnet when it's true."
   type        = string
   default     = ""
 }
