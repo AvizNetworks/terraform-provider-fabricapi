@@ -53,6 +53,42 @@ variable "tenant_ctrl" {
   default     = "ones"
 }
 
+variable "enable_ns" {
+  description = "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, frontend_storage and starting_subnet_cpu are required."
+  type        = bool
+  default     = false
+}
+
+variable "dedicated_storage" {
+  description = "Use a separate subnet for storage NICs instead of sharing the user/storage subnet. Only meaningful when enable_ns is true. Requires starting_subnet_storage."
+  type        = bool
+  default     = false
+}
+
+variable "frontend_storage" {
+  description = "Use a separate subnet for front-end CPU NICs. Required (must be true) when enable_ns is true. Requires starting_subnet_cpu."
+  type        = bool
+  default     = false
+}
+
+variable "starting_subnet_cpu" {
+  description = "Starting subnet for CPU NICs, e.g. \"10.2\". Required when enable_ns is true."
+  type        = string
+  default     = ""
+}
+
+variable "starting_subnet_storage" {
+  description = "Starting subnet for storage NICs, e.g. \"10.3\". Required when dedicated_storage is true."
+  type        = string
+  default     = ""
+}
+
+variable "starting_subnet_tenants" {
+  description = "Starting subnet for the tenant (user/storage) IP pool, e.g. \"10.4\" (the provider appends a trailing \".0\" octet before sending it to the API). Only meaningful when enable_ns is true."
+  type        = string
+  default     = ""
+}
+
 variable "deploy" {
   description = "If true, also push the generated config to real switches and mark the fabric Deployed (fabricapi_fabric_deploy). If false, only design/review the fabric (Draft)."
   type        = bool

@@ -1600,6 +1600,19 @@ type FabricDataRequest struct {
 	SuHostCnt         string            `json:"suHostCnt"`
 	Tenant            string            `json:"tenant"`
 	Instance          string            `json:"instance"`
+
+	// North-South (front-end user/storage) networking — mirrors the ONES UI's
+	// "N-S (Front-End) Network" section in FabricNetwork.jsx. IsOnesControlled
+	// is always true here (matching the UI's default for RA/DNO fabrics), which
+	// is why StartingSubnetTenants is optional rather than required.
+	EnableNS              bool   `json:"enableNS"`
+	IsOnesControlled      bool   `json:"isOnesControlled"`
+	UserAndStorage        bool   `json:"userandstorage"`
+	DedicatedStorage      bool   `json:"dedicatedStorage"`
+	FrontendStorage       bool   `json:"frontendStorage"`
+	StartingSubnetCpu     string `json:"startingSubnetCpu,omitempty"`
+	StartingSubnetStorage string `json:"startingSubnetStorage,omitempty"`
+	StartingSubnetTenants string `json:"startingSubnetTenants,omitempty"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent

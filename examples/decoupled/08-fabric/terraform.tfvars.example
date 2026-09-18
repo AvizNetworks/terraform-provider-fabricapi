@@ -14,6 +14,14 @@ enable_ew           = true
 hosts_per_su        = "{0:2}"
 tenant_ctrl         = "ones"
 
+# North-South (front-end user/storage) networking — off by default.
+# enable_ns               = true
+# frontend_storage        = true   # required (must be true) when enable_ns is true
+# starting_subnet_cpu     = "10.2" # required when enable_ns is true
+# dedicated_storage       = true   # optional; requires starting_subnet_storage
+# starting_subnet_storage = "10.3"
+# starting_subnet_tenants = "10.4"  # sent to the API as "10.4.0"
+
 # Set to true to also push the generated config to real switches and mark the fabric
 # Deployed (fabricapi_fabric_deploy). Leave false to only design/review (Draft).
 deploy              = false

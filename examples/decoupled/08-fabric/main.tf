@@ -28,6 +28,14 @@ resource "fabricapi_fabric" "this" {
   enable_ew           = var.enable_ew
   hosts_per_su        = var.hosts_per_su
   tenant_ctrl         = var.tenant_ctrl
+
+  # North-South (front-end user/storage) networking — all optional, off by default.
+  enable_ns               = var.enable_ns
+  dedicated_storage       = var.dedicated_storage
+  frontend_storage        = var.frontend_storage
+  starting_subnet_cpu     = var.starting_subnet_cpu != "" ? var.starting_subnet_cpu : null
+  starting_subnet_storage = var.starting_subnet_storage != "" ? var.starting_subnet_storage : null
+  starting_subnet_tenants = var.starting_subnet_tenants != "" ? var.starting_subnet_tenants : null
 }
 
 # devices can come from a JSON file (var.devices_file) instead of inline HCL — handy when
