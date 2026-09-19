@@ -79,8 +79,9 @@ output "fabric_id" {
 }
 
 output "generated_yaml" {
-  description = "The fabric's current generated YAML — download/review with: terraform output -raw generated_yaml > fabric.review.yaml"
+  description = "The fabric's current generated YAML — download/review with: terraform output -raw generated_yaml > fabric.review.yaml. Marked sensitive purely to keep it out of the default apply/plan output (which would otherwise print the whole YAML every time); -raw still prints the real content."
   value       = data.fabricapi_fabric_yaml.this.yaml
+  sensitive   = true
 }
 
 output "fabric_deploy_id" {
