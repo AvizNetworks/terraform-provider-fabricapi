@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -293,7 +292,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	if respBody != "" {
-		resp.Diagnostics.AddWarning("Fabric created", summarizeFabricCreateResponse(respBody))
+		resp.Diagnostics.AddWarning("Fabric created", respBody)
 	}
 
 	data.Status = types.StringValue(status)
@@ -312,31 +311,6 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.HostMap = hostMapValue
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-}
-
-// summarizeFabricCreateResponse condenses addFabricData's response (which
-// echoes back a full per-device inventory listing) into a short line, so a
-// successful create doesn't dump a wall of JSON into the plan output. Falls
-// back to the raw body if it doesn't parse as expected.
-func summarizeFabricCreateResponse(respBody string) string {
-	var parsed struct {
-		Message   string `json:"message"`
-		Inventory struct {
-			TotalItems int `json:"totalItems"`
-			Successful int `json:"successful"`
-			Failed     int `json:"failed"`
-		} `json:"inventory"`
-	}
-	if err := json.Unmarshal([]byte(respBody), &parsed); err != nil || parsed.Message == "" {
-		return respBody
-	}
-	if parsed.Inventory.TotalItems == 0 {
-		return parsed.Message
-	}
-	if parsed.Inventory.Failed > 0 {
-		return fmt.Sprintf("%d devices (%d failed)", parsed.Inventory.TotalItems, parsed.Inventory.Failed)
-	}
-	return fmt.Sprintf("%d devices", parsed.Inventory.TotalItems)
 }
 
 // hostMapFromHostsPerSu parses the API's "{0:1,1:2}" suHostCnt shorthand
