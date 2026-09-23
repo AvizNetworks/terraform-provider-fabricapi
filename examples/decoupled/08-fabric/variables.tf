@@ -4,9 +4,9 @@ variable "name" {
 }
 
 variable "type" {
-  description = "Fabric type, e.g. \"Aviz RA\"."
+  description = "Fabric type. One of \"NVIDIA SpX RA 1.3\", \"NVIDIA SpX RA 2.1\", \"Aviz RA 1.0\"."
   type        = string
-  default     = "Aviz RA"
+  default     = "Aviz RA 1.0"
 }
 
 variable "description" {

@@ -3,7 +3,7 @@
 # read the same values from terraform.tfvars automatically.
 
 name                = "AkashG"
-type                = "Aviz RA"
+type                = "Aviz RA 1.0"
 description         = "sdf"
 num_of_sus          = 1
 max_num_of_sus      = 1

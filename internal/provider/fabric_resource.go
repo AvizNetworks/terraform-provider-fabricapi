@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -12,6 +13,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -71,8 +73,11 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				},
 			},
 			"type": schema.StringAttribute{
-				MarkdownDescription: "Fabric type, e.g. \"Aviz RA\".",
+				MarkdownDescription: "Fabric type. One of \"NVIDIA SpX RA 1.3\", \"NVIDIA SpX RA 2.1\", \"Aviz RA 1.0\" (matching the ONES UI's fabric type list).",
 				Required:            true,
+				Validators: []validator.String{
+					stringvalidator.OneOf("NVIDIA SpX RA 1.3", "NVIDIA SpX RA 2.1", "Aviz RA 1.0"),
+				},
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
