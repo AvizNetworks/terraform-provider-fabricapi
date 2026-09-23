@@ -59,6 +59,21 @@ resource "fabricapi_tenant_servers" "example_servers" {
   }
 }
 
+# Assign/remove specific GPU ports for the tenant (POST /fabrics/{fabric}/tenants/{tenant}/gpus).
+# Separate from fabricapi_tenant_servers above (whole-server PATCH): only created when
+# gpu_port_server_names is set.
+resource "fabricapi_tenant_gpus" "example_gpus" {
+  count        = length(var.gpu_port_server_names) > 0 ? 1 : 0
+  tenant_name  = var.manage_tenant && length(fabricapi_tenant.example) > 0 ? fabricapi_tenant.example[0].tenant_name : var.tenant_name
+  operation    = var.gpu_port_operation
+  server_names = var.gpu_port_server_names
+  gpu_ids      = length(var.gpu_ids) > 0 ? var.gpu_ids : null
+  membership   = var.gpu_membership != "" ? var.gpu_membership : null
+
+  # Ensure the servers are already known to the tenant before assigning ports on them.
+  depends_on = [fabricapi_tenant.example, fabricapi_tenant_servers.example_servers]
+}
+
 # Create VPC peering after tenant + GPU allocation
 resource "fabricapi_vpcpeering" "example_vpcpeering" {
   count = var.create_vpcpeering ? 1 : 0
@@ -89,6 +104,10 @@ output "tenant_id" {
 
 output "servers_operation_id" {
   value = length(fabricapi_tenant_servers.example_servers) > 0 ? fabricapi_tenant_servers.example_servers[0].id : null
+}
+
+output "gpus_id" {
+  value = length(fabricapi_tenant_gpus.example_gpus) > 0 ? fabricapi_tenant_gpus.example_gpus[0].id : null
 }
 
 # Expected GPUs from server list (8 per server). UI may show one row per server (e.g. two rows of 8/8 = 16 total).
