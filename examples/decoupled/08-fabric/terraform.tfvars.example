@@ -13,6 +13,7 @@ starting_subnet_gpu = "192"
 enable_ew           = true
 hosts_per_su        = "{0:2}"
 tenant_ctrl         = "ones"
+# node_type = "gb200"  # optional — leave unset for the default ("dgx")
 
 # North-South (front-end user/storage) networking — off by default. Always ONES-managed
 # (isOnesControlled is not exposed here), so there's no tenant-subnet input either.

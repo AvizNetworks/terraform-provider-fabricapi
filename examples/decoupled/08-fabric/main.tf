@@ -28,6 +28,7 @@ resource "fabricapi_fabric" "this" {
   enable_ew           = var.enable_ew
   hosts_per_su        = var.hosts_per_su
   tenant_ctrl         = var.tenant_ctrl
+  node_type           = var.node_type != "" ? var.node_type : null
 
   # North-South (front-end user/storage) networking — all optional, off by default.
   enable_ns               = var.enable_ns

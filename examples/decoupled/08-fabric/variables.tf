@@ -53,6 +53,12 @@ variable "tenant_ctrl" {
   default     = "ones"
 }
 
+variable "node_type" {
+  description = "GPU node hardware, e.g. \"gb200\", \"gb300\", \"b300_32\", \"b300_64\", \"rtxpro_4\", \"rtxpro_8\". Leave empty for the default (\"dgx\") — dgx is not itself a value you need to set."
+  type        = string
+  default     = ""
+}
+
 variable "enable_ns" {
   description = "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, starting_subnet_cpu is required."
   type        = bool

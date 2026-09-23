@@ -47,6 +47,7 @@ type FabricResourceModel struct {
 	HostsPerSu        types.String `tfsdk:"hosts_per_su"`
 	TenantCtrl        types.String `tfsdk:"tenant_ctrl"`
 	Instance          types.String `tfsdk:"instance"`
+	NodeType          types.String `tfsdk:"node_type"`
 
 	// North-South (front-end user/storage) networking — see FabricDataRequest
 	// in client.go for how these map onto the addFabricData API fields.
@@ -165,6 +166,15 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 					stringplanmodifier.UseStateForUnknown(),
 				},
 			},
+			"node_type": schema.StringAttribute{
+				MarkdownDescription: "GPU node hardware, e.g. \"gb200\", \"gb300\", \"b300_32\", \"b300_64\", \"rtxpro_4\", \"rtxpro_8\". Leave unset for the default (\"dgx\") — dgx is not itself a value you need to set.",
+				Optional:            true,
+				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
 			"enable_ns": schema.BoolAttribute{
 				MarkdownDescription: "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, `starting_subnet_cpu` is required. Defaults to false if unset.",
 				Optional:            true,
@@ -234,6 +244,10 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	instance := "fm"
 	if !data.Instance.IsNull() && !data.Instance.IsUnknown() && strings.TrimSpace(data.Instance.ValueString()) != "" {
 		instance = data.Instance.ValueString()
+	}
+	nodeType := "dgx"
+	if !data.NodeType.IsNull() && !data.NodeType.IsUnknown() && strings.TrimSpace(data.NodeType.ValueString()) != "" {
+		nodeType = data.NodeType.ValueString()
 	}
 	enableEW := false
 	if !data.EnableEW.IsNull() && !data.EnableEW.IsUnknown() {
@@ -329,6 +343,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		SuHostCnt:         data.HostsPerSu.ValueString(),
 		Tenant:            data.TenantCtrl.ValueString(),
 		Instance:          instance,
+		NodeType:          nodeType,
 
 		EnableNS:              enableNS,
 		IsOnesControlled:      isOnesControlled,
@@ -350,6 +365,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	data.Status = types.StringValue(status)
 	data.Instance = types.StringValue(instance)
+	data.NodeType = types.StringValue(nodeType)
 	data.EnableEW = types.BoolValue(enableEW)
 	data.SimulationID = types.Int64Value(simulationID)
 	data.EnableNS = types.BoolValue(enableNS)

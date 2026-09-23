@@ -1817,6 +1817,10 @@ type FabricDataRequest struct {
 	StartingSubnetCpu     string `json:"startingSubnetCpu,omitempty"`
 	StartingSubnetStorage string `json:"startingSubnetStorage,omitempty"`
 	StartingSubnetTenants string `json:"startingSubnetTenants,omitempty"`
+
+	// NodeType is the GPU node hardware (e.g. "dgx", "gb200", "gb300"),
+	// matching the ONES UI's nodeType field. Defaults to "dgx".
+	NodeType string `json:"nodeType"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent
