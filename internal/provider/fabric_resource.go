@@ -7,6 +7,9 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -91,58 +94,103 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"num_of_sus": schema.Int64Attribute{
 				Required: true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
 			},
 			"max_num_of_sus": schema.Int64Attribute{
 				Required: true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+				},
 			},
 			"host_map": schema.MapAttribute{
 				MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
 				Optional:            true,
 				Computed:            true,
 				ElementType:         types.StringType,
+				PlanModifiers: []planmodifier.Map{
+					mapplanmodifier.RequiresReplace(),
+					mapplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"starting_subnet_gpu": schema.StringAttribute{
 				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"simulation_id": schema.Int64Attribute{
 				MarkdownDescription: "Raw `simulationId` value expected by the API. Defaults to 1 if unset.",
 				Optional:            true,
 				Computed:            true,
+				PlanModifiers: []planmodifier.Int64{
+					int64planmodifier.RequiresReplace(),
+					int64planmodifier.UseStateForUnknown(),
+				},
 			},
 			"enable_ew": schema.BoolAttribute{
 				MarkdownDescription: "Enable east-west networking. Defaults to false if unset.",
 				Optional:            true,
 				Computed:            true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"hosts_per_su": schema.StringAttribute{
 				MarkdownDescription: "Raw `suHostCnt` value expected by the API, e.g. \"{0:1}\". Sent exactly as provided, and also used to derive `host_map` when that attribute is left unset.",
 				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"tenant_ctrl": schema.StringAttribute{
 				Required: true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"instance": schema.StringAttribute{
 				MarkdownDescription: "Target instance, e.g. \"fm\". Defaults to \"fm\" if unset.",
 				Optional:            true,
 				Computed:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+					stringplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"enable_ns": schema.BoolAttribute{
 				MarkdownDescription: "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, `starting_subnet_cpu` is required. Defaults to false if unset.",
 				Optional:            true,
 				Computed:            true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"dedicated_storage": schema.BoolAttribute{
 				MarkdownDescription: "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when `enable_ns` is true. Requires `starting_subnet_storage`. Defaults to false if unset.",
 				Optional:            true,
 				Computed:            true,
+				PlanModifiers: []planmodifier.Bool{
+					boolplanmodifier.RequiresReplace(),
+					boolplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"starting_subnet_cpu": schema.StringAttribute{
 				MarkdownDescription: "Starting subnet for CPU NICs, e.g. \"10.2\". Required when `enable_ns` is true — used as the shared user/storage subnet when `dedicated_storage` is false, or as the dedicated CPU subnet when it's true.",
 				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"starting_subnet_storage": schema.StringAttribute{
 				MarkdownDescription: "Starting subnet for storage NICs, e.g. \"10.3\". Required when `dedicated_storage` is true.",
 				Optional:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"id": schema.StringAttribute{
 				Computed: true,

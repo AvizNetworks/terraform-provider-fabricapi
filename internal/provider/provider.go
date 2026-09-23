@@ -59,7 +59,7 @@ func (p *FabricAPIProvider) Schema(ctx context.Context, req provider.SchemaReque
 				Optional:            true,
 			},
 			"config_endpoint": schema.StringAttribute{
-				MarkdownDescription: "Base URL for the ONES UI config service (used by fabricapi_fabric for POST /api/config/addFabricData). This is a separate backend/host from `endpoint`. Required only when using fabricapi_fabric.",
+				MarkdownDescription: "Base URL for the ONES UI config service, used by both `fabricapi_fabric` (POST /api/config/addFabricData) and `fabricapi_fabric_deploy` (uploadip/validateswitch/validateserver/updateinventory/api/config/updatefabricstatus). This is a separate backend/host from `endpoint`. Required when using either of those resources.",
 				Optional:            true,
 			},
 			"access_token": schema.StringAttribute{
