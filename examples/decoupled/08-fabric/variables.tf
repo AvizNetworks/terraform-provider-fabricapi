@@ -45,6 +45,9 @@ variable "network_config" {
       - enable_east_west_networking / starting_subnet_gpu: east-west (GPU) networking.
       - enable_north_south_networking: front-end user/storage networking, matching the ONES
         UI's "N-S (Front-End) Network" section. When true, starting_subnet_cpu is required.
+      - ns_operating_system: "cumulus" (default) or "sonic" for the north-south switches,
+        matching the ONES UI's OS selector in that section. Must match the real devices'
+        actual OS or switch validation fails during deploy. East-west is always Cumulus.
       - dedicated_storage / starting_subnet_storage: optional pair (required together) that
         splits storage NICs onto their own subnet instead of sharing the CPU one — the ONES
         UI's "Dedicated Storage Network" switch.
@@ -53,6 +56,7 @@ variable "network_config" {
     enable_east_west_networking   = optional(bool, true)
     starting_subnet_gpu           = optional(string)
     enable_north_south_networking = optional(bool, false)
+    ns_operating_system           = optional(string)
     dedicated_storage             = optional(bool, false)
     starting_subnet_cpu           = optional(string)
     starting_subnet_storage       = optional(string)

@@ -59,6 +59,7 @@ type FabricNetworkConfigModel struct {
 	EnableEastWestNetworking   types.Bool   `tfsdk:"enable_east_west_networking"`
 	StartingSubnetGpu          types.String `tfsdk:"starting_subnet_gpu"`
 	EnableNorthSouthNetworking types.Bool   `tfsdk:"enable_north_south_networking"`
+	NsOperatingSystem          types.String `tfsdk:"ns_operating_system"`
 	DedicatedStorage           types.Bool   `tfsdk:"dedicated_storage"`
 	StartingSubnetCpu          types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage      types.String `tfsdk:"starting_subnet_storage"`
@@ -199,6 +200,17 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							boolplanmodifier.UseStateForUnknown(),
 						},
 					},
+					"ns_operating_system": schema.StringAttribute{
+						MarkdownDescription: "Operating system for the north-south (front-end/storage) switches — \"cumulus\" or \"sonic\", matching the ONES UI's OS selector in the N-S section. Only meaningful when `enable_north_south_networking` is true; a mismatch against the real devices' actual OS fails switch validation (\"Device type mismatch\"). Defaults to \"cumulus\" if unset. East-west switches are always treated as Cumulus by the API and aren't configurable here.",
+						Optional:            true,
+						Computed:            true,
+						Validators: []validator.String{
+							stringvalidator.OneOf("cumulus", "sonic"),
+						},
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.UseStateForUnknown(),
+						},
+					},
 					"dedicated_storage": schema.BoolAttribute{
 						MarkdownDescription: "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when `enable_north_south_networking` is true. Requires `starting_subnet_storage`. Defaults to false if unset.",
 						Optional:            true,
@@ -270,6 +282,10 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	enableNS := false
 	if !data.NetworkConfig.EnableNorthSouthNetworking.IsNull() && !data.NetworkConfig.EnableNorthSouthNetworking.IsUnknown() {
 		enableNS = data.NetworkConfig.EnableNorthSouthNetworking.ValueBool()
+	}
+	nsOperatingSystem := "cumulus"
+	if !data.NetworkConfig.NsOperatingSystem.IsNull() && !data.NetworkConfig.NsOperatingSystem.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NsOperatingSystem.ValueString()) != "" {
+		nsOperatingSystem = data.NetworkConfig.NsOperatingSystem.ValueString()
 	}
 	// Always ONES-managed — not exposed as an input. The ONES UI's "Tenant
 	// control" radio (isOnesControlled=false, "External") is what unlocks the
@@ -362,6 +378,13 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		FrontendStorage:       frontendStorage,
 		StartingSubnetCPU:     startingSubnetCpu,
 		StartingSubnetStorage: startingSubnetStorage,
+
+		// East-west is always Cumulus in the ONES UI (not user-selectable there);
+		// front-end/storage (north-south) OS is user-selectable and must match
+		// the real devices' actual OS or switch validation fails.
+		OperatingSystemE: "cumulus",
+		OperatingSystemF: nsOperatingSystem,
+		OperatingSystemS: nsOperatingSystem,
 	}
 
 	respBody, err := r.client.CreateFabricData(ctx, reqBody)
@@ -379,6 +402,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.SuConfig.SimulationID = types.Int64Value(simulationID)
 	data.NetworkConfig.EnableEastWestNetworking = types.BoolValue(enableEW)
 	data.NetworkConfig.EnableNorthSouthNetworking = types.BoolValue(enableNS)
+	data.NetworkConfig.NsOperatingSystem = types.StringValue(nsOperatingSystem)
 	data.NetworkConfig.DedicatedStorage = types.BoolValue(dedicatedStorage)
 	data.ID = types.StringValue(data.Name.ValueString())
 

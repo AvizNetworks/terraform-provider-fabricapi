@@ -104,6 +104,20 @@ type FabricDataRequest struct {
 	// NodeType is the GPU node hardware (e.g. "dgx", "gb200", "gb300"),
 	// matching the ONES UI's nodeType field. Defaults to "dgx".
 	NodeType string `json:"nodeType"`
+
+	// Operating system per network leg, matching the ONES UI's OSRadioGroup
+	// (FabricNetwork.jsx) — "cumulus" or "sonic". OperatingSystemE (east-west)
+	// is always "cumulus" in the UI (not user-selectable there, so not exposed
+	// here either). OperatingSystemF/OperatingSystemS (front-end/storage, i.e.
+	// the north-south leaf/spine roles from StorageFrontendStrategy) are set
+	// together from a single UI toggle, since validateswitch checks each
+	// device's actual OS against whichever value was sent here — a mismatch
+	// (e.g. real SONiC switches with this left at the "cumulus" default)
+	// fails validation with "Device type mismatch: Expected Cumulus but got
+	// non-Cumulus".
+	OperatingSystemE string `json:"operatingSystemE"`
+	OperatingSystemF string `json:"operatingSystemF"`
+	OperatingSystemS string `json:"operatingSystemS"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent

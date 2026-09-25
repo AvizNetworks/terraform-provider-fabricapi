@@ -23,8 +23,9 @@ network_config = {
   # North-South (front-end user/storage) networking — off by default. Always ONES-managed
   # (isOnesControlled is not exposed here), so there's no tenant-subnet input either.
   # enable_north_south_networking = true
-  # starting_subnet_cpu           = "10.2" # required when enable_north_south_networking is true
-  # dedicated_storage             = true   # optional; requires starting_subnet_storage
+  # ns_operating_system           = "cumulus" # or "sonic" — must match the real devices' OS
+  # starting_subnet_cpu           = "10.2"    # required when enable_north_south_networking is true
+  # dedicated_storage             = true      # optional; requires starting_subnet_storage
   # starting_subnet_storage       = "10.3"
 }
 
