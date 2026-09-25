@@ -117,7 +117,7 @@ func (r *FabricDeployResource) Schema(ctx context.Context, req resource.SchemaRe
 				},
 			},
 			"custom_yaml": schema.StringAttribute{
-				MarkdownDescription: "A pre-edited fabric YAML to deploy instead of fetching the server's current generated YAML (GET /fabrics/{name}). Use `data.fabricapi_fabric_yaml.this.yaml` to review the auto-generated YAML first, hand-edit it, then pass the edited content back in here (e.g. `custom_yaml = file(\"fabric.reviewed.yaml\")`) — or supply a YAML from elsewhere entirely to deploy without ever fetching the generated one. Leave unset to use the server's current YAML as-is.",
+				MarkdownDescription: "A pre-edited fabric YAML to deploy instead of fetching the server's current generated YAML (GET /fabrics/{name}). Use `data.fabricapi_fabric_yaml.this.yaml` to review the auto-generated YAML first, hand-edit it, then pass the edited content back in here (e.g. `custom_yaml = file(\"fabric.reviewed.yaml\")`) — or supply a YAML from elsewhere entirely to deploy without ever fetching the generated one. Leave unset to use the server's current YAML as-is. Regardless of the source, every device's `ipAddress`/`Credentials` in the YAML are overwritten from `devices` before pushing, so a YAML captured before credentials existed (e.g. an early design-only snapshot) still gets deployed with the real values.",
 				Optional:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -223,6 +223,81 @@ func failedDeviceValidations(results []ValidateDeviceResult, missingSuccess func
 		}
 	}
 	return failures
+}
+
+// findMappingValue returns the value node for key within a YAML mapping node, or nil if
+// the mapping is nil, isn't a mapping, or has no such key.
+func findMappingValue(mapping *yaml.Node, key string) *yaml.Node {
+	if mapping == nil || mapping.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == key {
+			return mapping.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// setScalarValue overwrites a scalar node's value in place as a plain string.
+func setScalarValue(node *yaml.Node, value string) {
+	if node == nil {
+		return
+	}
+	node.Kind = yaml.ScalarNode
+	node.Tag = "!!str"
+	node.Value = value
+}
+
+// injectDeviceCredentials walks the fabric YAML's Connectivity section (Spine/Leaf/Tor/
+// SSpine/Host, each a sequence of devices keyed by switchName or hostName) and stamps the
+// real ipAddress/Credentials for every device matching one of the given devices by
+// hostname. Applied unconditionally — for a freshly fetched YAML this is a no-op safety net
+// (UploadFabricDeviceIPs already patched the server's own copy), but for a caller-supplied
+// custom_yaml it's the actual fix: that file may have been captured before any credentials
+// were ever uploaded (e.g. an early Scenario-2 snapshot), and would otherwise be pushed with
+// permanently blank ipAddress/Credentials even though real ones were just uploaded above.
+func injectDeviceCredentials(doc *yaml.Node, devices []FabricDeviceInput) {
+	if doc == nil || len(doc.Content) == 0 {
+		return
+	}
+	connectivity := findMappingValue(doc.Content[0], "Connectivity")
+	if connectivity == nil {
+		return
+	}
+
+	byHostname := make(map[string]FabricDeviceInput, len(devices))
+	for _, d := range devices {
+		byHostname[strings.ToLower(strings.TrimSpace(d.Hostname))] = d
+	}
+
+	for i := 1; i < len(connectivity.Content); i += 2 {
+		tier := connectivity.Content[i]
+		if tier.Kind != yaml.SequenceNode {
+			continue
+		}
+		for _, device := range tier.Content {
+			if device.Kind != yaml.MappingNode {
+				continue
+			}
+			nameNode := findMappingValue(device, "switchName")
+			if nameNode == nil {
+				nameNode = findMappingValue(device, "hostName")
+			}
+			if nameNode == nil {
+				continue
+			}
+			match, ok := byHostname[strings.ToLower(strings.TrimSpace(nameNode.Value))]
+			if !ok {
+				continue
+			}
+			setScalarValue(findMappingValue(device, "ipAddress"), match.IP)
+			if creds := findMappingValue(device, "Credentials"); creds != nil {
+				setScalarValue(findMappingValue(creds, "user"), match.Username)
+				setScalarValue(findMappingValue(creds, "password"), match.Password)
+			}
+		}
+	}
 }
 
 // yamlNodeToOrderedJSON converts a parsed *yaml.Node into JSON, preserving mapping key
@@ -428,6 +503,9 @@ func (r *FabricDeployResource) Create(ctx context.Context, req resource.CreateRe
 		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to parse generated fabric YAML for %q: %s", fabricName, err))
 		return
 	}
+	// Always stamp the real per-device ipAddress/Credentials in, regardless of whether this
+	// YAML was just fetched or supplied via custom_yaml — see injectDeviceCredentials.
+	injectDeviceCredentials(&doc, devices)
 	orderedJSON, err := yamlNodeToOrderedJSON(&doc)
 	if err != nil {
 		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to convert generated fabric YAML for %q to JSON: %s", fabricName, err))
