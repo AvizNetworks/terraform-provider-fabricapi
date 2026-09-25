@@ -51,7 +51,7 @@ variable "network_config" {
   EOT
   type = object({
     enable_east_west_networking   = optional(bool, true)
-    starting_subnet_gpu           = string
+    starting_subnet_gpu           = optional(string)
     enable_north_south_networking = optional(bool, false)
     dedicated_storage             = optional(bool, false)
     starting_subnet_cpu           = optional(string)

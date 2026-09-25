@@ -188,7 +188,8 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						},
 					},
 					"starting_subnet_gpu": schema.StringAttribute{
-						Required: true,
+						MarkdownDescription: "Starting GPU subnet, e.g. \"192\". Required when `enable_east_west_networking` is true; not needed otherwise.",
+						Optional:            true,
 					},
 					"enable_north_south_networking": schema.BoolAttribute{
 						MarkdownDescription: "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, `starting_subnet_cpu` is required. Defaults to false if unset.",
