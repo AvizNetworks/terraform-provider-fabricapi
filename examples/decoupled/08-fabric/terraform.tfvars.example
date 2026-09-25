@@ -2,25 +2,31 @@
 # Once this file exists, `apply` and `destroy` need no -var flags at all: they both
 # read the same values from terraform.tfvars automatically.
 
-name                = "AkashG"
-type                = "Aviz RA 1.0"
-description         = "sdf"
-num_of_sus          = 1
-max_num_of_sus      = 1
-# host_map is optional — left unset here, the provider derives it from hosts_per_su below
-# ({"0" = "2"} in this case), since the API requires both fields with the same data.
-starting_subnet_gpu = "192"
-enable_ew           = true
-hosts_per_su        = "{0:2}"
-tenant_ctrl         = "ones"
-# node_type = "gb200"  # optional — leave unset for the default ("dgx")
+name        = "example-fabric"
+type        = "Aviz RA 1.0"
+description = "sdf"
 
-# North-South (front-end user/storage) networking — off by default. Always ONES-managed
-# (isOnesControlled is not exposed here), so there's no tenant-subnet input either.
-# enable_ns               = true
-# starting_subnet_cpu     = "10.2" # required when enable_ns is true
-# dedicated_storage       = true   # optional; requires starting_subnet_storage
-# starting_subnet_storage = "10.3"
+su_config = {
+  number_of_sus     = 1
+  max_number_of_sus = 1
+  # host_map is optional — left unset here, the provider derives it from hosts_per_su
+  # ({"0" = "2"} in this case), since the API requires both fields with the same data.
+  hosts_per_su = "{0:2}"
+  tenant_ctrl  = "ones"
+  # node_type = "gb200"  # optional — leave unset for the default ("dgx")
+}
+
+network_config = {
+  starting_subnet_gpu         = "192"
+  enable_east_west_networking = true
+
+  # North-South (front-end user/storage) networking — off by default. Always ONES-managed
+  # (isOnesControlled is not exposed here), so there's no tenant-subnet input either.
+  # enable_north_south_networking = true
+  # starting_subnet_cpu           = "10.2" # required when enable_north_south_networking is true
+  # dedicated_storage             = true   # optional; requires starting_subnet_storage
+  # starting_subnet_storage       = "10.3"
+}
 
 # Set to true to also push the generated config to real switches and mark the fabric
 # Deployed (fabricapi_fabric_deploy). Leave false to only design/review (Draft).

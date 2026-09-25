@@ -18,23 +18,12 @@ provider "fabricapi" {
 }
 
 resource "fabricapi_fabric" "this" {
-  name                = var.name
-  type                = var.type
-  description         = var.description
-  num_of_sus          = var.num_of_sus
-  max_num_of_sus      = var.max_num_of_sus
-  host_map            = length(var.host_map) > 0 ? var.host_map : null
-  starting_subnet_gpu = var.starting_subnet_gpu
-  enable_ew           = var.enable_ew
-  hosts_per_su        = var.hosts_per_su
-  tenant_ctrl         = var.tenant_ctrl
-  node_type           = var.node_type != "" ? var.node_type : null
+  name        = var.name
+  type        = var.type
+  description = var.description
 
-  # North-South (front-end user/storage) networking — all optional, off by default.
-  enable_ns               = var.enable_ns
-  dedicated_storage       = var.dedicated_storage
-  starting_subnet_cpu     = var.starting_subnet_cpu != "" ? var.starting_subnet_cpu : null
-  starting_subnet_storage = var.starting_subnet_storage != "" ? var.starting_subnet_storage : null
+  su_config      = var.su_config
+  network_config = var.network_config
 }
 
 # devices can come from a JSON file (var.devices_file) instead of inline HCL — handy when

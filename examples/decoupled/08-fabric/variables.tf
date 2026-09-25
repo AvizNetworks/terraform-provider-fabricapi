@@ -15,72 +15,48 @@ variable "description" {
   default     = ""
 }
 
-variable "num_of_sus" {
-  description = "Number of SUs."
-  type        = number
+variable "su_config" {
+  description = <<-EOT
+    Scale-unit and tenant configuration, mirroring the ONES UI's SU-config step.
+      - node_type: GPU node hardware, e.g. "gb200", "gb300", "b300_32", "b300_64", "rtxpro_4",
+        "rtxpro_8". Leave unset for the default ("dgx") — dgx is not itself a value you need to set.
+      - number_of_sus / max_number_of_sus: scale-unit counts.
+      - hosts_per_su: raw suHostCnt value expected by the API, e.g. "{0:1}".
+      - host_map: SU index -> host count, e.g. { "0" = "1" }. Leave unset to have the provider
+        derive it from hosts_per_su (both fields carry the same data).
+      - tenant_ctrl: tenant context for the addFabricData call, e.g. "ones". Unrelated to the
+        ONES UI's ONES/External "Tenant control" radio, which this provider doesn't expose.
+      - simulation_id: raw simulationId value expected by the API. Defaults to 1 if unset.
+  EOT
+  type = object({
+    node_type         = optional(string)
+    number_of_sus     = number
+    max_number_of_sus = number
+    hosts_per_su      = string
+    host_map          = optional(map(string))
+    tenant_ctrl       = optional(string, "ones")
+    simulation_id     = optional(number)
+  })
 }
 
-variable "max_num_of_sus" {
-  description = "Maximum number of SUs."
-  type        = number
-}
-
-variable "host_map" {
-  description = "SU index -> host count map, e.g. { \"0\" = \"1\" }. Optional: leave empty to have the provider derive it from hosts_per_su (both fields carry the same data)."
-  type        = map(string)
-  default     = {}
-}
-
-variable "starting_subnet_gpu" {
-  description = "Starting GPU subnet, e.g. \"192\"."
-  type        = string
-}
-
-variable "enable_ew" {
-  description = "Enable east-west networking."
-  type        = bool
-  default     = true
-}
-
-variable "hosts_per_su" {
-  description = "Raw suHostCnt value expected by the API, e.g. \"{0:1}\"."
-  type        = string
-}
-
-variable "tenant_ctrl" {
-  description = "Tenant context for the addFabricData call, e.g. \"ones\"."
-  type        = string
-  default     = "ones"
-}
-
-variable "node_type" {
-  description = "GPU node hardware, e.g. \"gb200\", \"gb300\", \"b300_32\", \"b300_64\", \"rtxpro_4\", \"rtxpro_8\". Leave empty for the default (\"dgx\") — dgx is not itself a value you need to set."
-  type        = string
-  default     = ""
-}
-
-variable "enable_ns" {
-  description = "Enable north-south (front-end user/storage) networking, matching the ONES UI's \"N-S (Front-End) Network\" section. When true, starting_subnet_cpu is required."
-  type        = bool
-  default     = false
-}
-
-variable "dedicated_storage" {
-  description = "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when enable_ns is true. Requires starting_subnet_storage."
-  type        = bool
-  default     = false
-}
-
-variable "starting_subnet_cpu" {
-  description = "Starting subnet for CPU NICs, e.g. \"10.2\". Required when enable_ns is true — used as the shared user/storage subnet when dedicated_storage is false, or as the dedicated CPU subnet when it's true."
-  type        = string
-  default     = ""
-}
-
-variable "starting_subnet_storage" {
-  description = "Starting subnet for storage NICs, e.g. \"10.3\". Required when dedicated_storage is true."
-  type        = string
-  default     = ""
+variable "network_config" {
+  description = <<-EOT
+    East-west and north-south networking configuration.
+      - enable_east_west_networking / starting_subnet_gpu: east-west (GPU) networking.
+      - enable_north_south_networking: front-end user/storage networking, matching the ONES
+        UI's "N-S (Front-End) Network" section. When true, starting_subnet_cpu is required.
+      - dedicated_storage / starting_subnet_storage: optional pair (required together) that
+        splits storage NICs onto their own subnet instead of sharing the CPU one — the ONES
+        UI's "Dedicated Storage Network" switch.
+  EOT
+  type = object({
+    enable_east_west_networking   = optional(bool, true)
+    starting_subnet_gpu           = string
+    enable_north_south_networking = optional(bool, false)
+    dedicated_storage             = optional(bool, false)
+    starting_subnet_cpu           = optional(string)
+    starting_subnet_storage       = optional(string)
+  })
 }
 
 variable "deploy" {
