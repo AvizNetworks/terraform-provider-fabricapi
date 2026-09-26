@@ -1,0 +1,54 @@
+# Copy to terraform.tfvars (do not commit secrets — auth is via env vars, not here).
+# Once this file exists, `apply` and `destroy` need no -var flags at all: they both
+# read the same values from terraform.tfvars automatically.
+
+name        = "example-fabric"
+type        = "Aviz RA 1.0"
+description = "sdf"
+
+su_config = {
+  number_of_sus     = 1
+  max_number_of_sus = 1
+  # host_map is optional — left unset here, the provider derives it from hosts_per_su
+  # ({"0" = "2"} in this case), since the API requires both fields with the same data.
+  hosts_per_su = "{0:2}"
+  tenant_ctrl  = "ones"
+  # node_type = "gb200"  # optional — leave unset for the default ("dgx")
+}
+
+network_config = {
+  starting_subnet_gpu         = "192"
+  enable_east_west_networking = true
+
+  # North-South (front-end user/storage) networking — off by default. Always ONES-managed
+  # (isOnesControlled is not exposed here), so there's no tenant-subnet input either.
+  # enable_north_south_networking = true
+  # ns_operating_system           = "cumulus" # or "sonic" — must match the real devices' OS
+  # starting_subnet_cpu           = "10.2"    # required when enable_north_south_networking is true
+  # dedicated_storage             = true      # optional; requires starting_subnet_storage
+  # starting_subnet_storage       = "10.3"
+}
+
+# Set to true to also push the generated config to real switches and mark the fabric
+# Deployed (fabricapi_fabric_deploy). Leave false to only design/review (Draft).
+deploy              = false
+# deployment_type   = "DEFAULT"  # DEFAULT | PARTIAL_CONFIG | BROWNFIELD
+
+# Only used when deploy = true. Two ways to supply device credentials — pick one:
+#
+# Option A: inline HCL (this is sensitive; keep it out of version control). Example:
+# devices = [
+#   { hostname = "spine-s00",    ip = "10.0.0.1", username = "admin", password = "...", device_role = "spine" },
+#   { hostname = "leaf-su00-r0", ip = "10.0.0.2", username = "admin", password = "...", device_role = "leaf" },
+#   { hostname = "hgx-su00-h00", ip = "10.0.0.3", username = "admin", password = "...", device_role = "host" },
+# ]
+devices = []
+
+# Option B: read from a JSON file instead (copy devices.json.example -> devices.json,
+# fill in real values). Takes precedence over `devices` above when non-empty.
+devices_file = "devices.json"
+
+# Only used when deploy = true. Path to a hand-edited or externally-sourced YAML to deploy
+# instead of the server's own generated one (Scenarios 3 & 4 — see examples/decoupled/README.md).
+# Leave empty ("") to deploy the server's current generated YAML as-is (Scenario 1).
+custom_yaml_path = ""

@@ -19,6 +19,8 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Tenant GPU ports** (`fabricapi_tenant_gpus`): assign/remove GPU ports for a tenant on externally-managed UFM/NMX-C fabrics (POST `.../tenants/{tenant}/gpus`); whole-server (`server_names`) or specific `gpu_ids`, optional UFM `membership`
 - **VF assign** (`fabricapi_vf_assign`): bind/unbind HBN VF interfaces to a tenant VLAN (POST/DELETE `.../vf-interfaces/{vfId}/assign`)
 - **VPC peering** (`fabricapi_vpcpeering`): create
+- **Fabric** (`fabricapi_fabric`): create/delete a fabric via the ONES UI config service (POST `/api/config/addFabricData`, DELETE `/api/config/deletefabricbyname/{name}`) — requires provider `config_endpoint` / `FABRIC_API_CONFIG_ENDPOINT`. Inputs are grouped into two nested attributes mirroring the ONES UI's own fabric-creation steps: `su_config` (`number_of_sus`, `max_number_of_sus`, `hosts_per_su`, `tenant_ctrl`, optional `node_type` — defaults to `"dgx"` — and `simulation_id`) and `network_config` (east-west via `enable_east_west_networking` + `starting_subnet_gpu`, north-south via `enable_north_south_networking` + required `starting_subnet_cpu`, with optional `dedicated_storage`/`starting_subnet_storage`). `type` is restricted to `"NVIDIA SpX RA 1.3"`, `"NVIDIA SpX RA 2.1"`, or `"Aviz RA 1.0"`. Always ONES-managed tenant control
+- **Fabric deploy** (`fabricapi_fabric_deploy`): deploy a `fabricapi_fabric` — uploads real device credentials, SSH-validates switches/servers (hard-fails on any failure), pushes credentials to inventory, pushes generated config to real switches, marks the fabric Deployed; matches the ONES UI's "Deploy Fabric" sequence (`uploadip` → `validateswitch`/`validateserver` → `updateinventory` → `/api/config` → `updatefabricstatus`). UFM/NMX/border-leaf-port flows aren't implemented. No known undeploy API, so destroy only removes it from state. Set `custom_yaml` to deploy a hand-edited or externally-sourced YAML instead of the server's own generated one
 - **Inventory sync** (`fabricapi_inventory_sync`): force an immediate UFM inventory reconcile (POST `.../fabrics/{fabric}/inventorySync`)
 
 ### Data sources
@@ -26,6 +28,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
 - **Tenants** (`fabricapi_tenants`): list tenant names for a fabric
 - **Available servers** (`fabricapi_available_servers`): list free GPU server hostnames (GET `.../available_servers`)
 - **VF interfaces** (`fabricapi_vf_interfaces`): list HBN VF interfaces for a GPU server (GET `.../vf-interfaces`)
+- **Fabric YAML** (`fabricapi_fabric_yaml`): fetch a fabric's current generated YAML for review (GET `/fabrics/{name}`) — design-only inspection, no deploy side effects
 
 ## Examples (copy/paste friendly)
 
@@ -38,6 +41,7 @@ Terraform provider for managing Fabric API objects via standard Terraform workfl
   - `05-available-servers`: lookup free servers before allocate (read-only)
   - `06-vf-interfaces`: lookup HBN VF interfaces on a server (read-only)
   - `07-vf-assign`: bind/unbind a VF to a tenant VLAN
+  - `08-fabric`: create a fabric via the ONES UI config service
 
 - **State files**: each root keeps its own state; use one consistent `tenant_name` across those commands for the same tenant, new state filenames for a different tenant, and follow the guides for VPC peering cleanup. See **How state files relate to tenants** in `README.docker.md` or `README.make.md`.
 

@@ -24,6 +24,11 @@ type APIClient struct {
 	Fabric       string
 	AuthEndpoint string
 
+	// ConfigEndpoint is the base URL for the ONES UI "config" service
+	// (e.g. POST {ConfigEndpoint}/api/config/addFabricData). This is a
+	// separate backend/host from Endpoint (the Fabric API on :8089).
+	ConfigEndpoint string
+
 	// Auth: Username/Password are used to fetch an access token (and refresh token) via POST /login.
 	// Token is then used as an Authorization Bearer token for all requests.
 	// When RefreshToken is present, the client will refresh the access token once on 401 responses.
@@ -148,9 +153,16 @@ func (c *APIClient) doRequestRawWithHeaders(
 		respBody, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 
-		// Retry once on auth failure by refreshing access token.
+		// Retry once on auth failure by refreshing access token. Callers that override
+		// Authorization directly (config-service calls use a raw token, not the Bearer
+		// header setCommonHeaders would otherwise set) captured that value before the
+		// refresh, so it must be recomputed here or the retry silently reuses the
+		// expired token.
 		if resp.StatusCode == http.StatusUnauthorized && attempt == 0 {
 			if err := c.refreshTokenOnce(ctx); err == nil {
+				if _, ok := extraHeaders["Authorization"]; ok {
+					extraHeaders["Authorization"] = rawTokenHeaderValue(c.Token)
+				}
 				continue
 			}
 		}
