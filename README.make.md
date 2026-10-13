@@ -345,7 +345,10 @@ terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
   `/api/config/deletefabricbyname/{name}` — this genuinely removes the fabric from ONES, not
   just from Terraform state.
 - `fabricapi_fabric_yaml` (data source) — GET `/fabrics/{name}`, fetched on every `apply`
-  regardless of `deploy`. Read it with `terraform output -raw generated_yaml`.
+  regardless of `deploy`. Read it with `terraform output -raw generated_yaml`. **Note:** once a
+  prior apply has deployed the fabric (`uploadip` has run), this fetch returns the server's
+  credential-filled YAML, not the blank-credential Draft — `local_file.generated_yaml` below is
+  owner-only (`0600`/`0700`) for exactly this reason.
 - `fabricapi_fabric_deploy` — the "Deploy Fabric" button's full sequence, opt-in via
   `var.deploy=true`:
   1. `uploadip` — fills in real `ip`/`username`/`password` per device.
@@ -359,10 +362,13 @@ terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
      fabric's own current generated YAML (step 1's output) otherwise.
   6. `updatefabricstatus` — marks the fabric `Deployed`.
 
-  Steps 2 and 3 only emit a Terraform warning **on failure** — a clean validation run produces no
-  log output for them, so don't read a quiet apply as "they didn't run." `destroy` on this
-  resource is **state-only**: there is no known "undeploy" API, so the fabric stays `Deployed` in
-  ONES after `terraform destroy` removes it from Terraform's management.
+  Steps 2 and 3 produce **no log output on success** — only `uploadip`, `updateinventory`, the
+  config push, and `updatefabricstatus` print a Terraform warning when they succeed, so a quiet
+  apply for the validate steps means they passed, not that they were skipped. On failure they are
+  a **hard error** (`terraform apply` aborts), not a warning — don't expect a deploy to complete
+  with a validation failure merely logged. `destroy` on this resource is **state-only**: there is
+  no known "undeploy" API, so the fabric stays `Deployed` in ONES after `terraform destroy`
+  removes it from Terraform's management.
 
 Requires `FABRIC_API_CONFIG_ENDPOINT` (provider `config_endpoint` or env) — a **separate
 host/port** from `FABRIC_API_ENDPOINT` (the ONES UI/config backend, not the Fabric API).
