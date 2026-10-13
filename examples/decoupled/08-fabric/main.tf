@@ -46,8 +46,10 @@ data "fabricapi_fabric_yaml" "this" {
 }
 
 resource "local_file" "generated_yaml" {
-  filename = "${path.module}/fabric.generated.yaml"
-  content  = data.fabricapi_fabric_yaml.this.yaml
+  filename             = "${path.module}/fabric.generated.yaml"
+  content              = data.fabricapi_fabric_yaml.this.yaml
+  file_permission      = "0644"
+  directory_permission = "0755"
 }
 
 # Deploy is a separate, explicit step (opt-in via var.deploy) — it pushes the fabric's
