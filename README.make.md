@@ -335,6 +335,119 @@ terraform -chdir=./examples/decoupled/03-vpcpeering state rm \
   fabricapi_vpcpeering.this
 ```
 
+## 08 - Fabric (design + deploy via ONES UI config service)
+
+`examples/decoupled/08-fabric` manages two resources that mirror the ONES UI's own "Design" and
+"Deploy Fabric" actions:
+
+- `fabricapi_fabric` — POST `/api/config/addFabricData` to create a Draft fabric (generates a
+  skeleton YAML + inventory with blank device credentials). `destroy` **always** calls DELETE
+  `/api/config/deletefabricbyname/{name}` — this genuinely removes the fabric from ONES, not
+  just from Terraform state.
+- `fabricapi_fabric_yaml` (data source) — GET `/fabrics/{name}`, fetched on every `apply`
+  regardless of `deploy`. Read it with `terraform output -raw generated_yaml`. **Note:** once a
+  prior apply has deployed the fabric (`uploadip` has run), this fetch returns the server's
+  credential-filled YAML, not the blank-credential Draft — `local_file.generated_yaml` below is
+  owner-only (`0600`/`0700`) for exactly this reason.
+- `fabricapi_fabric_deploy` — the "Deploy Fabric" button's full sequence, opt-in via
+  `var.deploy=true`:
+  1. `uploadip` — fills in real `ip`/`username`/`password` per device.
+  2. `validateswitch` — SSH-validates every switch in `devices`/`devices_file` with
+     `apply_config=true`. **Hard-fails the apply** if any switch doesn't report a build. Only
+     runs when at least one switch device is present.
+  3. `validateserver` — SSH-validates every server/host device. **Hard-fails the apply** if any
+     server doesn't report an OS. Only runs when at least one server device is present.
+  4. `updateinventory` — pushes device credentials to the downstream FM engine's inventory.
+  5. Pushes config to the real switches — either `custom_yaml`/`custom_yaml_path` if set, or the
+     fabric's own current generated YAML (step 1's output) otherwise.
+  6. `updatefabricstatus` — marks the fabric `Deployed`.
+
+  Steps 2 and 3 produce **no log output on success** — only `uploadip`, `updateinventory`, the
+  config push, and `updatefabricstatus` print a Terraform warning when they succeed, so a quiet
+  apply for the validate steps means they passed, not that they were skipped. On failure they are
+  a **hard error** (`terraform apply` aborts), not a warning — don't expect a deploy to complete
+  with a validation failure merely logged. `destroy` on this resource is **state-only**: there is
+  no known "undeploy" API, so the fabric stays `Deployed` in ONES after `terraform destroy`
+  removes it from Terraform's management.
+
+Requires `FABRIC_API_CONFIG_ENDPOINT` (provider `config_endpoint` or env) — a **separate
+host/port** from `FABRIC_API_ENDPOINT` (the ONES UI/config backend, not the Fabric API).
+
+### `devices` / `devices_file`
+
+`var.devices` (or `var.devices_file`, a JSON file — see
+`examples/decoupled/08-fabric/devices.json.example`) must cover every device in the fabric's
+generated inventory, each with `hostname`/`ip`/`username`/`password` and optional
+`device_type`/`device_role`/`apply_config` (default `true`). `devices_file` takes precedence over
+`devices` when both are set. Real credential files matching `**/devices.json` are gitignored —
+only the `.example` is tracked; never commit real device credentials.
+
+### `custom_yaml_path`
+
+Optional (default unset). When omitted, `deploy=true` pushes the fabric's own current generated
+YAML as-is. Set it to deploy a hand-edited or externally-sourced YAML instead — see
+`examples/decoupled/08-fabric/scenarios-ewns.md` for the four usage scenarios (deploy in one call,
+design-only, design→review→edit→deploy, deploy a YAML from elsewhere).
+
+### Sample commands — design only, view the YAML (no deploy)
+
+```bash
+mkdir -p ./examples/decoupled/08-fabric/states
+terraform -chdir=./examples/decoupled/08-fabric init -upgrade
+
+export FABRIC_API_CONFIG_ENDPOINT="https://localhost"
+
+terraform -chdir=./examples/decoupled/08-fabric apply -auto-approve \
+  -state=states/e2e_fabric.tfstate \
+  -var="name=fabric-ew-only-customyaml" -var="type=Aviz RA 1.0" -var="description=ew only" \
+  -var='su_config={number_of_sus=1,max_number_of_sus=1,hosts_per_su="{0:2}",tenant_ctrl="ones"}' \
+  -var='network_config={starting_subnet_gpu="172",enable_east_west_networking=true}' \
+  -var="deploy=false"
+
+terraform -chdir=./examples/decoupled/08-fabric output \
+  -state=states/e2e_fabric.tfstate \
+  -raw generated_yaml > examples/decoupled/08-fabric/fabric.review.yaml
+```
+
+Note the `output` flag order: `-state=...` must come **before** `-raw generated_yaml`, not after
+— Terraform treats anything after the first positional argument (`generated_yaml`) as another
+positional argument, not a flag, and errors with "Unexpected argument".
+
+### Sample commands — deploy in one call
+
+```bash
+terraform -chdir=./examples/decoupled/08-fabric apply -auto-approve \
+  -state=states/e2e_fabric.tfstate \
+  -var="name=fabric-ew-only-customyaml" -var="type=Aviz RA 1.0" -var="description=ew only" \
+  -var='su_config={number_of_sus=1,max_number_of_sus=1,hosts_per_su="{0:2}",tenant_ctrl="ones"}' \
+  -var='network_config={starting_subnet_gpu="172",enable_east_west_networking=true}' \
+  -var="deploy=true" \
+  -var="devices_file=/absolute/path/to/devices.json"
+```
+
+### Sample commands — destroy (deletes the fabric for real)
+
+Use the same `-var` values as whichever `apply` created the state:
+
+```bash
+terraform -chdir=./examples/decoupled/08-fabric destroy -auto-approve \
+  -state=states/e2e_fabric.tfstate \
+  -var="name=fabric-ew-only-customyaml" -var="type=Aviz RA 1.0" -var="description=ew only" \
+  -var='su_config={number_of_sus=1,max_number_of_sus=1,hosts_per_su="{0:2}",tenant_ctrl="ones"}' \
+  -var='network_config={starting_subnet_gpu="172",enable_east_west_networking=true}' \
+  -var="deploy=true" \
+  -var="devices_file=/absolute/path/to/devices.json"
+```
+
+### End-to-end: fabric → tenant → server
+
+Once the fabric above is deployed, point `FABRIC_NAME` at it and continue with the tenant and
+server flows from earlier in this guide — e.g. **1) Tenant creation** and **2) GPU allocation —
+whole server (ADD)** — substituting `fabric-ew-only-customyaml` for `Get_fab` and a real hostname
+from that fabric's inventory (e.g. `hgx-su00-h00`) for `servers`. Deallocate with **4) GPU
+deallocation — whole server (DELETE)** and delete the tenant with **5) Tenant deletion** before
+destroying the fabric itself, if the API requires an empty tenant first.
+
 ## Alternative examples
 
 - `examples/` (single Terraform root): `examples/main.tf`

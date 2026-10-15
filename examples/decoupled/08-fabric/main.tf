@@ -48,6 +48,11 @@ data "fabricapi_fabric_yaml" "this" {
 resource "local_file" "generated_yaml" {
   filename = "${path.module}/fabric.generated.yaml"
   content  = data.fabricapi_fabric_yaml.this.yaml
+  # This data source is re-fetched on every apply regardless of var.deploy, so once a prior
+  # apply has deployed the fabric (step 1, uploadip, has run), the server's generated YAML
+  # carries real device credentials — owner-only permissions, not the provider's 0777 default.
+  file_permission      = "0600"
+  directory_permission = "0700"
 }
 
 # Deploy is a separate, explicit step (opt-in via var.deploy) — it pushes the fabric's
