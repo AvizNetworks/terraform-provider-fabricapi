@@ -43,6 +43,11 @@ type FabricSuConfigModel struct {
 	MaxNumberOfSUs types.Int64  `tfsdk:"max_number_of_sus"`
 	HostsPerSU     types.String `tfsdk:"hosts_per_su"`
 	HostMap        types.Map    `tfsdk:"host_map"`
+	// RackHostMap is the gb200/gb300-only host layout: SU index -> {rack name ->
+	// host count}, matching the ONES UI's rack/node picker for those node types
+	// (FabricSuConfig.jsx). Ignored for every other node_type. See the schema
+	// description for why this can't just be host_map with a looser element type.
+	RackHostMap types.Map `tfsdk:"rack_host_map"`
 	// TenantCtrl is the addFabricData `tenant` field (always effectively
 	// "ones" in practice) — NOT the ONES UI's separate "Tenant control"
 	// ONES/External radio (isOnesControlled), which this provider doesn't
@@ -63,6 +68,9 @@ type FabricNetworkConfigModel struct {
 	DedicatedStorage           types.Bool   `tfsdk:"dedicated_storage"`
 	StartingSubnetCpu          types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage      types.String `tfsdk:"starting_subnet_storage"`
+	DpuHbn                     types.Bool   `tfsdk:"dpu_hbn"`
+	IsVxlanFabric              types.Bool   `tfsdk:"is_vxlan_fabric"`
+	StorageTenantAware         types.Bool   `tfsdk:"storage_tenant_aware"`
 }
 
 type FabricResourceModel struct {
@@ -151,13 +159,28 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						Required:            true,
 					},
 					"host_map": schema.MapAttribute{
-						MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
+						MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data. Ignored when `rack_host_map` is set (gb200/gb300 only).",
 						Optional:            true,
 						Computed:            true,
 						ElementType:         types.StringType,
 						PlanModifiers: []planmodifier.Map{
 							mapplanmodifier.UseStateForUnknown(),
 						},
+					},
+					"rack_host_map": schema.MapAttribute{
+						MarkdownDescription: "**gb200/gb300 only.** SU index -> {rack name -> host count}, e.g. " +
+							"`{\"0\" = {\"rack1\" = \"5\", \"rack2\" = \"6\", \"rack3\" = \"4\"}}` for a gb300 SU with 3 " +
+							"racks. The addFabricData `hostMap` field needs this nested shape for `node_type` " +
+							"\"gb200\"/\"gb300\" to get rack-based hostnames (`su00-rack00-node00`, ...); a flat " +
+							"`host_map`/`hosts_per_su`-derived value there silently falls back to generic " +
+							"`hgx-suXX-hYY` naming instead (topologySevice.generate_host_node_names only takes the " +
+							"rack branch when the SU's value is itself an object). Rack keys must be exactly " +
+							"\"rack1\"/\"rack2\"/\"rack3\" (gb300: 3 racks; gb200: 2), max 18 nodes/rack, matching " +
+							"the ONES UI's rack/node picker. When set, takes precedence over `host_map`/`hosts_per_su` " +
+							"for the request's `hostMap` field — but `hosts_per_su` is still required and must be " +
+							"set to the same data as raw JSON (e.g. `\"{\\\"0\\\":{\\\"rack1\\\":\\\"5\\\",\\\"rack2\\\":\\\"6\\\",\\\"rack3\\\":\\\"4\\\"}}\"`), matching how the ONES UI round-trips `suHostCnt` for these node types.",
+						Optional:    true,
+						ElementType: types.MapType{ElemType: types.StringType},
 					},
 					"tenant_ctrl": schema.StringAttribute{
 						MarkdownDescription: "Tenant context for the addFabricData call, e.g. \"ones\". Unrelated to the ONES UI's ONES/External \"Tenant control\" radio, which this provider doesn't expose.",
@@ -227,6 +250,30 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						MarkdownDescription: "Starting subnet for storage NICs, e.g. \"10.3\". Required when `dedicated_storage` is true.",
 						Optional:            true,
 					},
+					"dpu_hbn": schema.BoolAttribute{
+						MarkdownDescription: "Enable DPU/HBN offload for the east-west network — GPU hosts connect through a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's HBN toggle. Only meaningful when `enable_east_west_networking` is true. Defaults to false if unset. Devices discovered on an HBN fabric are read with `fabricapi_vf_interfaces` and bound to a tenant with `fabricapi_vf_assign`, not through the whole-server/per-GPU allocation resources. The ONES UI forces `is_vxlan_fabric` to VXLAN (not user-selectable there) whenever this is true — not enforced here, so set both explicitly together if you rely on that pairing.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"is_vxlan_fabric": schema.BoolAttribute{
+						MarkdownDescription: "Tenant segmentation mechanism: `true` for VXLAN (overlay), `false` for VLAN — matching the ONES UI's \"Tenant Segmentation\" radio in the N-S network step. A fabric-wide choice applied to every tenant's generated config (Fabrics.isVxlanFabric on the backend, consumed by SpectrumMultiTenancyConfig/SpectrumVrfLiteConfig), not a per-tenant setting. Defaults to `true` (VXLAN) if unset, matching the UI's default.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"storage_tenant_aware": schema.BoolAttribute{
+						MarkdownDescription: "Whether storage NICs participate in tenant isolation, matching the ONES UI's \"Tenant aware (Storage)\" Yes/No toggle in the N-S network step. Defaults to `false` if unset, matching the UI's default.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
 				},
 			},
 			"id": schema.StringAttribute{
@@ -287,6 +334,18 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !data.NetworkConfig.NsOperatingSystem.IsNull() && !data.NetworkConfig.NsOperatingSystem.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NsOperatingSystem.ValueString()) != "" {
 		nsOperatingSystem = data.NetworkConfig.NsOperatingSystem.ValueString()
 	}
+	dpuHbn := false
+	if !data.NetworkConfig.DpuHbn.IsNull() && !data.NetworkConfig.DpuHbn.IsUnknown() {
+		dpuHbn = data.NetworkConfig.DpuHbn.ValueBool()
+	}
+	isVxlanFabric := true
+	if !data.NetworkConfig.IsVxlanFabric.IsNull() && !data.NetworkConfig.IsVxlanFabric.IsUnknown() {
+		isVxlanFabric = data.NetworkConfig.IsVxlanFabric.ValueBool()
+	}
+	storageTenantAware := false
+	if !data.NetworkConfig.StorageTenantAware.IsNull() && !data.NetworkConfig.StorageTenantAware.IsUnknown() {
+		storageTenantAware = data.NetworkConfig.StorageTenantAware.ValueBool()
+	}
 	// Always ONES-managed — not exposed as an input. The ONES UI's "Tenant
 	// control" radio (isOnesControlled=false, "External") is what unlocks the
 	// "Tenant Compute IP Pool" field (startingSubnetTenants); since that mode
@@ -336,23 +395,43 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
-	hostMap := map[string]string{}
-	if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
-		resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &hostMap, false)...)
+	hostMap := map[string]any{}
+	usingRackHostMap := !data.SuConfig.RackHostMap.IsNull() && !data.SuConfig.RackHostMap.IsUnknown() && len(data.SuConfig.RackHostMap.Elements()) > 0
+	var flatHostMap map[string]string
+	if usingRackHostMap {
+		// gb200/gb300 rack layout — nested per-SU object, never flattened. Takes
+		// precedence over host_map/hosts_per_su-derivation; see the schema
+		// description for why the API needs this exact shape for rack naming.
+		rackHostMap := map[string]map[string]string{}
+		resp.Diagnostics.Append(data.SuConfig.RackHostMap.ElementsAs(ctx, &rackHostMap, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-	}
-	if len(hostMap) == 0 {
-		derived, err := hostMapFromHostsPerSu(data.SuConfig.HostsPerSU.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Invalid su_config.hosts_per_su",
-				fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.SuConfig.HostsPerSU.ValueString(), err),
-			)
-			return
+		for su, racks := range rackHostMap {
+			hostMap[su] = racks
 		}
-		hostMap = derived
+	} else {
+		flatHostMap = map[string]string{}
+		if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
+			resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &flatHostMap, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+		if len(flatHostMap) == 0 {
+			derived, err := hostMapFromHostsPerSu(data.SuConfig.HostsPerSU.ValueString())
+			if err != nil {
+				resp.Diagnostics.AddError(
+					"Invalid su_config.hosts_per_su",
+					fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.SuConfig.HostsPerSU.ValueString(), err),
+				)
+				return
+			}
+			flatHostMap = derived
+		}
+		for su, count := range flatHostMap {
+			hostMap[su] = count
+		}
 	}
 
 	reqBody := FabricDataRequest{
@@ -385,6 +464,10 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		OperatingSystemE: "cumulus",
 		OperatingSystemF: nsOperatingSystem,
 		OperatingSystemS: nsOperatingSystem,
+
+		DpuHbn:             dpuHbn,
+		IsVxlanFabric:      isVxlanFabric,
+		StorageTenantAware: storageTenantAware,
 	}
 
 	respBody, err := r.client.CreateFabricData(ctx, reqBody)
@@ -404,14 +487,24 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.NetworkConfig.EnableNorthSouthNetworking = types.BoolValue(enableNS)
 	data.NetworkConfig.NsOperatingSystem = types.StringValue(nsOperatingSystem)
 	data.NetworkConfig.DedicatedStorage = types.BoolValue(dedicatedStorage)
+	data.NetworkConfig.DpuHbn = types.BoolValue(dpuHbn)
+	data.NetworkConfig.IsVxlanFabric = types.BoolValue(isVxlanFabric)
+	data.NetworkConfig.StorageTenantAware = types.BoolValue(storageTenantAware)
 	data.ID = types.StringValue(data.Name.ValueString())
 
-	hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, hostMap)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
+	if usingRackHostMap {
+		// host_map carries flat string values only (see schema); it genuinely
+		// doesn't apply in rack mode, so write back null rather than attempting
+		// to force the nested rack data into that shape.
+		data.SuConfig.HostMap = types.MapNull(types.StringType)
+	} else {
+		hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, flatHostMap)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.SuConfig.HostMap = hostMapValue
 	}
-	data.SuConfig.HostMap = hostMapValue
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

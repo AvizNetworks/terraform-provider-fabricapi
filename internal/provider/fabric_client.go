@@ -74,19 +74,25 @@ func (c *APIClient) configRequestString(ctx context.Context, method, path string
 // FabricDataRequest matches the ONES UI "config" service contract:
 // POST {config_endpoint}/api/config/addFabricData.
 type FabricDataRequest struct {
-	Name              string            `json:"name"`
-	Type              string            `json:"type"`
-	Status            string            `json:"status"`
-	Description       string            `json:"description"`
-	NumOfSUs          int               `json:"numOfSus"`
-	MaxNumOfSUs       int               `json:"maxNumOfSus"`
-	HostMap           map[string]string `json:"hostMap"`
-	StartingSubnetGPU string            `json:"startingSubnetGpu"`
-	SimulationID      int               `json:"simulationId"`
-	EnableEW          bool              `json:"enableEW"`
-	SUHostCount       string            `json:"suHostCnt"`
-	Tenant            string            `json:"tenant"`
-	Instance          string            `json:"instance"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Status      string `json:"status"`
+	Description string `json:"description"`
+	NumOfSUs    int    `json:"numOfSus"`
+	MaxNumOfSUs int    `json:"maxNumOfSus"`
+	// HostMap's per-SU value is a flat host count (string) for every node type
+	// except gb200/gb300, where the UI and topologySevice.generate_host_node_names
+	// both require a nested rack->count object instead (e.g. {"0": {"rack1": "5",
+	// "rack2": "6", "rack3": "4"}}) to produce rack-based hostnames; any other
+	// shape there silently falls through to generic hgx-suXX-hYY naming. `any`
+	// lets this struct carry either shape depending on node type.
+	HostMap           map[string]any `json:"hostMap"`
+	StartingSubnetGPU string         `json:"startingSubnetGpu"`
+	SimulationID      int            `json:"simulationId"`
+	EnableEW          bool           `json:"enableEW"`
+	SUHostCount       string         `json:"suHostCnt"`
+	Tenant            string         `json:"tenant"`
+	Instance          string         `json:"instance"`
 
 	// North-South (front-end user/storage) networking — mirrors the ONES UI's
 	// "N-S (Front-End) Network" section in FabricNetwork.jsx. IsONESControlled
@@ -118,6 +124,23 @@ type FabricDataRequest struct {
 	OperatingSystemE string `json:"operatingSystemE"`
 	OperatingSystemF string `json:"operatingSystemF"`
 	OperatingSystemS string `json:"operatingSystemS"`
+
+	// DpuHbn enables DPU/HBN offload for the east-west network — GPU hosts connect
+	// through a BlueField DPU running HBN instead of directly to the E-W leaf.
+	// Orthogonal to Type/NodeType: topology generation (TopologyController) and
+	// YAML/inventory export route storage and VF naming through the DPU whenever
+	// this is true, matching the ONES UI's HBN toggle. Defaults to false.
+	DpuHbn bool `json:"dpuHbn"`
+
+	// IsVxlanFabric/StorageTenantAware are forwarded as-is to the FM backend
+	// (Fabrics.isVxlanFabric persists fabric-wide, consumed by
+	// SpectrumMultiTenancyConfig/SpectrumVrfLiteConfig for real tenant VLAN vs.
+	// VXLAN config generation) — not used by this repo's own topology-YAML
+	// preview, only by the real backend tenant config path. Match the ONES UI's
+	// "Tenant Segmentation" (VLAN/VXLAN) and "Tenant aware (Storage)" (Yes/No)
+	// radios in the N-S network step.
+	IsVxlanFabric      bool `json:"isVxlanFabric"`
+	StorageTenantAware bool `json:"storageTenantAware"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent

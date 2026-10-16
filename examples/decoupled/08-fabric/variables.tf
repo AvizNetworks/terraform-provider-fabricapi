@@ -23,7 +23,15 @@ variable "su_config" {
       - number_of_sus / max_number_of_sus: scale-unit counts.
       - hosts_per_su: raw suHostCnt value expected by the API, e.g. "{0:1}".
       - host_map: SU index -> host count, e.g. { "0" = "1" }. Leave unset to have the provider
-        derive it from hosts_per_su (both fields carry the same data).
+        derive it from hosts_per_su (both fields carry the same data). Ignored when
+        rack_host_map is set.
+      - rack_host_map: gb200/gb300 only. SU index -> {rack name -> host count}, e.g.
+        { "0" = { "rack1" = "5", "rack2" = "6", "rack3" = "4" } } for a gb300 SU with 3 racks
+        (gb200 uses 2). A flat host_map/hosts_per_su-derived value does NOT produce rack-based
+        hostnames for these node types — it silently falls back to generic hgx-suXX-hYY naming.
+        hosts_per_su is still required alongside this and must carry the same data as raw JSON
+        (e.g. "{\"0\":{\"rack1\":\"5\",\"rack2\":\"6\",\"rack3\":\"4\"}}"), matching how the
+        ONES UI round-trips suHostCnt for gb200/gb300.
       - tenant_ctrl: tenant context for the addFabricData call, e.g. "ones". Unrelated to the
         ONES UI's ONES/External "Tenant control" radio, which this provider doesn't expose.
       - simulation_id: raw simulationId value expected by the API. Defaults to 1 if unset.
@@ -34,6 +42,7 @@ variable "su_config" {
     max_number_of_sus = number
     hosts_per_su      = string
     host_map          = optional(map(string))
+    rack_host_map     = optional(map(map(string)))
     tenant_ctrl       = optional(string, "ones")
     simulation_id     = optional(number)
   })
@@ -51,6 +60,19 @@ variable "network_config" {
       - dedicated_storage / starting_subnet_storage: optional pair (required together) that
         splits storage NICs onto their own subnet instead of sharing the CPU one — the ONES
         UI's "Dedicated Storage Network" switch.
+      - dpu_hbn: enable DPU/HBN offload for the east-west network — GPU hosts connect through
+        a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's
+        HBN toggle. Only meaningful when enable_east_west_networking is true. Devices on an HBN
+        fabric are managed with fabricapi_vf_interfaces/fabricapi_vf_assign (see
+        examples/decoupled/06-vf-interfaces and 07-vf-assign), not the server/GPU allocation
+        resources.
+      - is_vxlan_fabric: tenant segmentation — true for VXLAN (overlay), false for VLAN, matching
+        the ONES UI's "Tenant Segmentation" radio. Fabric-wide, applied to every tenant's
+        generated config, not a per-tenant setting. Defaults to true (VXLAN) if unset. The UI
+        forces this to VXLAN (hides the radio) whenever dpu_hbn is true; not enforced here, so
+        set both explicitly together if you rely on that pairing.
+      - storage_tenant_aware: whether storage NICs participate in tenant isolation, matching the
+        ONES UI's "Tenant aware (Storage)" Yes/No toggle. Defaults to false if unset.
   EOT
   type = object({
     enable_east_west_networking   = optional(bool, true)
@@ -60,6 +82,9 @@ variable "network_config" {
     dedicated_storage             = optional(bool, false)
     starting_subnet_cpu           = optional(string)
     starting_subnet_storage       = optional(string)
+    dpu_hbn                       = optional(bool, false)
+    is_vxlan_fabric               = optional(bool, true)
+    storage_tenant_aware          = optional(bool, false)
   })
 }
 
