@@ -43,6 +43,11 @@ type FabricSuConfigModel struct {
 	MaxNumberOfSUs types.Int64  `tfsdk:"max_number_of_sus"`
 	HostsPerSU     types.String `tfsdk:"hosts_per_su"`
 	HostMap        types.Map    `tfsdk:"host_map"`
+	// RackHostMap is the gb200/gb300-only host layout: SU index -> {rack name ->
+	// host count}, matching the ONES UI's rack/node picker for those node types
+	// (FabricSuConfig.jsx). Ignored for every other node_type. See the schema
+	// description for why this can't just be host_map with a looser element type.
+	RackHostMap types.Map `tfsdk:"rack_host_map"`
 	// TenantCtrl is the addFabricData `tenant` field (always effectively
 	// "ones" in practice) — NOT the ONES UI's separate "Tenant control"
 	// ONES/External radio (isOnesControlled), which this provider doesn't
@@ -152,13 +157,28 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						Required:            true,
 					},
 					"host_map": schema.MapAttribute{
-						MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
+						MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data. Ignored when `rack_host_map` is set (gb200/gb300 only).",
 						Optional:            true,
 						Computed:            true,
 						ElementType:         types.StringType,
 						PlanModifiers: []planmodifier.Map{
 							mapplanmodifier.UseStateForUnknown(),
 						},
+					},
+					"rack_host_map": schema.MapAttribute{
+						MarkdownDescription: "**gb200/gb300 only.** SU index -> {rack name -> host count}, e.g. " +
+							"`{\"0\" = {\"rack1\" = \"5\", \"rack2\" = \"6\", \"rack3\" = \"4\"}}` for a gb300 SU with 3 " +
+							"racks. The addFabricData `hostMap` field needs this nested shape for `node_type` " +
+							"\"gb200\"/\"gb300\" to get rack-based hostnames (`su00-rack00-node00`, ...); a flat " +
+							"`host_map`/`hosts_per_su`-derived value there silently falls back to generic " +
+							"`hgx-suXX-hYY` naming instead (topologySevice.generate_host_node_names only takes the " +
+							"rack branch when the SU's value is itself an object). Rack keys must be exactly " +
+							"\"rack1\"/\"rack2\"/\"rack3\" (gb300: 3 racks; gb200: 2), max 18 nodes/rack, matching " +
+							"the ONES UI's rack/node picker. When set, takes precedence over `host_map`/`hosts_per_su` " +
+							"for the request's `hostMap` field — but `hosts_per_su` is still required and must be " +
+							"set to the same data as raw JSON (e.g. `\"{\\\"0\\\":{\\\"rack1\\\":\\\"5\\\",\\\"rack2\\\":\\\"6\\\",\\\"rack3\\\":\\\"4\\\"}}\"`), matching how the ONES UI round-trips `suHostCnt` for these node types.",
+						Optional:    true,
+						ElementType: types.MapType{ElemType: types.StringType},
 					},
 					"tenant_ctrl": schema.StringAttribute{
 						MarkdownDescription: "Tenant context for the addFabricData call, e.g. \"ones\". Unrelated to the ONES UI's ONES/External \"Tenant control\" radio, which this provider doesn't expose.",
@@ -349,23 +369,41 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		)
 		return
 	}
-	hostMap := map[string]string{}
-	if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
-		resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &hostMap, false)...)
+	hostMap := map[string]any{}
+	if !data.SuConfig.RackHostMap.IsNull() && !data.SuConfig.RackHostMap.IsUnknown() && len(data.SuConfig.RackHostMap.Elements()) > 0 {
+		// gb200/gb300 rack layout — nested per-SU object, never flattened. Takes
+		// precedence over host_map/hosts_per_su-derivation; see the schema
+		// description for why the API needs this exact shape for rack naming.
+		rackHostMap := map[string]map[string]string{}
+		resp.Diagnostics.Append(data.SuConfig.RackHostMap.ElementsAs(ctx, &rackHostMap, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-	}
-	if len(hostMap) == 0 {
-		derived, err := hostMapFromHostsPerSu(data.SuConfig.HostsPerSU.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Invalid su_config.hosts_per_su",
-				fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.SuConfig.HostsPerSU.ValueString(), err),
-			)
-			return
+		for su, racks := range rackHostMap {
+			hostMap[su] = racks
 		}
-		hostMap = derived
+	} else {
+		flatHostMap := map[string]string{}
+		if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
+			resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &flatHostMap, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+		if len(flatHostMap) == 0 {
+			derived, err := hostMapFromHostsPerSu(data.SuConfig.HostsPerSU.ValueString())
+			if err != nil {
+				resp.Diagnostics.AddError(
+					"Invalid su_config.hosts_per_su",
+					fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.SuConfig.HostsPerSU.ValueString(), err),
+				)
+				return
+			}
+			flatHostMap = derived
+		}
+		for su, count := range flatHostMap {
+			hostMap[su] = count
+		}
 	}
 
 	reqBody := FabricDataRequest{
