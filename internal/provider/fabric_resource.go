@@ -69,6 +69,8 @@ type FabricNetworkConfigModel struct {
 	StartingSubnetCpu          types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage      types.String `tfsdk:"starting_subnet_storage"`
 	DpuHbn                     types.Bool   `tfsdk:"dpu_hbn"`
+	IsVxlanFabric              types.Bool   `tfsdk:"is_vxlan_fabric"`
+	StorageTenantAware         types.Bool   `tfsdk:"storage_tenant_aware"`
 }
 
 type FabricResourceModel struct {
@@ -249,7 +251,23 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						Optional:            true,
 					},
 					"dpu_hbn": schema.BoolAttribute{
-						MarkdownDescription: "Enable DPU/HBN offload for the east-west network — GPU hosts connect through a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's HBN toggle. Only meaningful when `enable_east_west_networking` is true. Defaults to false if unset. Devices discovered on an HBN fabric are read with `fabricapi_vf_interfaces` and bound to a tenant with `fabricapi_vf_assign`, not through the whole-server/per-GPU allocation resources.",
+						MarkdownDescription: "Enable DPU/HBN offload for the east-west network — GPU hosts connect through a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's HBN toggle. Only meaningful when `enable_east_west_networking` is true. Defaults to false if unset. Devices discovered on an HBN fabric are read with `fabricapi_vf_interfaces` and bound to a tenant with `fabricapi_vf_assign`, not through the whole-server/per-GPU allocation resources. The ONES UI forces `is_vxlan_fabric` to VXLAN (not user-selectable there) whenever this is true — not enforced here, so set both explicitly together if you rely on that pairing.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"is_vxlan_fabric": schema.BoolAttribute{
+						MarkdownDescription: "Tenant segmentation mechanism: `true` for VXLAN (overlay), `false` for VLAN — matching the ONES UI's \"Tenant Segmentation\" radio in the N-S network step. A fabric-wide choice applied to every tenant's generated config (Fabrics.isVxlanFabric on the backend, consumed by SpectrumMultiTenancyConfig/SpectrumVrfLiteConfig), not a per-tenant setting. Defaults to `true` (VXLAN) if unset, matching the UI's default.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"storage_tenant_aware": schema.BoolAttribute{
+						MarkdownDescription: "Whether storage NICs participate in tenant isolation, matching the ONES UI's \"Tenant aware (Storage)\" Yes/No toggle in the N-S network step. Defaults to `false` if unset, matching the UI's default.",
 						Optional:            true,
 						Computed:            true,
 						PlanModifiers: []planmodifier.Bool{
@@ -319,6 +337,14 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	dpuHbn := false
 	if !data.NetworkConfig.DpuHbn.IsNull() && !data.NetworkConfig.DpuHbn.IsUnknown() {
 		dpuHbn = data.NetworkConfig.DpuHbn.ValueBool()
+	}
+	isVxlanFabric := true
+	if !data.NetworkConfig.IsVxlanFabric.IsNull() && !data.NetworkConfig.IsVxlanFabric.IsUnknown() {
+		isVxlanFabric = data.NetworkConfig.IsVxlanFabric.ValueBool()
+	}
+	storageTenantAware := false
+	if !data.NetworkConfig.StorageTenantAware.IsNull() && !data.NetworkConfig.StorageTenantAware.IsUnknown() {
+		storageTenantAware = data.NetworkConfig.StorageTenantAware.ValueBool()
 	}
 	// Always ONES-managed — not exposed as an input. The ONES UI's "Tenant
 	// control" radio (isOnesControlled=false, "External") is what unlocks the
@@ -439,7 +465,9 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		OperatingSystemF: nsOperatingSystem,
 		OperatingSystemS: nsOperatingSystem,
 
-		DpuHbn: dpuHbn,
+		DpuHbn:             dpuHbn,
+		IsVxlanFabric:      isVxlanFabric,
+		StorageTenantAware: storageTenantAware,
 	}
 
 	respBody, err := r.client.CreateFabricData(ctx, reqBody)
@@ -459,6 +487,9 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.NetworkConfig.EnableNorthSouthNetworking = types.BoolValue(enableNS)
 	data.NetworkConfig.NsOperatingSystem = types.StringValue(nsOperatingSystem)
 	data.NetworkConfig.DedicatedStorage = types.BoolValue(dedicatedStorage)
+	data.NetworkConfig.DpuHbn = types.BoolValue(dpuHbn)
+	data.NetworkConfig.IsVxlanFabric = types.BoolValue(isVxlanFabric)
+	data.NetworkConfig.StorageTenantAware = types.BoolValue(storageTenantAware)
 	data.ID = types.StringValue(data.Name.ValueString())
 
 	if usingRackHostMap {

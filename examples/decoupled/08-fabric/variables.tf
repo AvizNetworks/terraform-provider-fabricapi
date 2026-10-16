@@ -66,6 +66,13 @@ variable "network_config" {
         fabric are managed with fabricapi_vf_interfaces/fabricapi_vf_assign (see
         examples/decoupled/06-vf-interfaces and 07-vf-assign), not the server/GPU allocation
         resources.
+      - is_vxlan_fabric: tenant segmentation — true for VXLAN (overlay), false for VLAN, matching
+        the ONES UI's "Tenant Segmentation" radio. Fabric-wide, applied to every tenant's
+        generated config, not a per-tenant setting. Defaults to true (VXLAN) if unset. The UI
+        forces this to VXLAN (hides the radio) whenever dpu_hbn is true; not enforced here, so
+        set both explicitly together if you rely on that pairing.
+      - storage_tenant_aware: whether storage NICs participate in tenant isolation, matching the
+        ONES UI's "Tenant aware (Storage)" Yes/No toggle. Defaults to false if unset.
   EOT
   type = object({
     enable_east_west_networking   = optional(bool, true)
@@ -76,6 +83,8 @@ variable "network_config" {
     starting_subnet_cpu           = optional(string)
     starting_subnet_storage       = optional(string)
     dpu_hbn                       = optional(bool, false)
+    is_vxlan_fabric               = optional(bool, true)
+    storage_tenant_aware          = optional(bool, false)
   })
 }
 

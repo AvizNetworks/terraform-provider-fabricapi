@@ -131,6 +131,16 @@ type FabricDataRequest struct {
 	// YAML/inventory export route storage and VF naming through the DPU whenever
 	// this is true, matching the ONES UI's HBN toggle. Defaults to false.
 	DpuHbn bool `json:"dpuHbn"`
+
+	// IsVxlanFabric/StorageTenantAware are forwarded as-is to the FM backend
+	// (Fabrics.isVxlanFabric persists fabric-wide, consumed by
+	// SpectrumMultiTenancyConfig/SpectrumVrfLiteConfig for real tenant VLAN vs.
+	// VXLAN config generation) — not used by this repo's own topology-YAML
+	// preview, only by the real backend tenant config path. Match the ONES UI's
+	// "Tenant Segmentation" (VLAN/VXLAN) and "Tenant aware (Storage)" (Yes/No)
+	// radios in the N-S network step.
+	IsVxlanFabric      bool `json:"isVxlanFabric"`
+	StorageTenantAware bool `json:"storageTenantAware"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent
