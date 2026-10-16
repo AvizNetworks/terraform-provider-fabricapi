@@ -370,7 +370,9 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 	hostMap := map[string]any{}
-	if !data.SuConfig.RackHostMap.IsNull() && !data.SuConfig.RackHostMap.IsUnknown() && len(data.SuConfig.RackHostMap.Elements()) > 0 {
+	usingRackHostMap := !data.SuConfig.RackHostMap.IsNull() && !data.SuConfig.RackHostMap.IsUnknown() && len(data.SuConfig.RackHostMap.Elements()) > 0
+	var flatHostMap map[string]string
+	if usingRackHostMap {
 		// gb200/gb300 rack layout — nested per-SU object, never flattened. Takes
 		// precedence over host_map/hosts_per_su-derivation; see the schema
 		// description for why the API needs this exact shape for rack naming.
@@ -383,7 +385,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 			hostMap[su] = racks
 		}
 	} else {
-		flatHostMap := map[string]string{}
+		flatHostMap = map[string]string{}
 		if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
 			resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &flatHostMap, false)...)
 			if resp.Diagnostics.HasError() {
@@ -459,12 +461,19 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.NetworkConfig.DedicatedStorage = types.BoolValue(dedicatedStorage)
 	data.ID = types.StringValue(data.Name.ValueString())
 
-	hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, hostMap)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
+	if usingRackHostMap {
+		// host_map carries flat string values only (see schema); it genuinely
+		// doesn't apply in rack mode, so write back null rather than attempting
+		// to force the nested rack data into that shape.
+		data.SuConfig.HostMap = types.MapNull(types.StringType)
+	} else {
+		hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, flatHostMap)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.SuConfig.HostMap = hostMapValue
 	}
-	data.SuConfig.HostMap = hostMapValue
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
