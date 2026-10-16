@@ -118,6 +118,13 @@ type FabricDataRequest struct {
 	OperatingSystemE string `json:"operatingSystemE"`
 	OperatingSystemF string `json:"operatingSystemF"`
 	OperatingSystemS string `json:"operatingSystemS"`
+
+	// DpuHbn enables DPU/HBN offload for the east-west network — GPU hosts connect
+	// through a BlueField DPU running HBN instead of directly to the E-W leaf.
+	// Orthogonal to Type/NodeType: topology generation (TopologyController) and
+	// YAML/inventory export route storage and VF naming through the DPU whenever
+	// this is true, matching the ONES UI's HBN toggle. Defaults to false.
+	DpuHbn bool `json:"dpuHbn"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent

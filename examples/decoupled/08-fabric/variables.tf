@@ -51,6 +51,12 @@ variable "network_config" {
       - dedicated_storage / starting_subnet_storage: optional pair (required together) that
         splits storage NICs onto their own subnet instead of sharing the CPU one — the ONES
         UI's "Dedicated Storage Network" switch.
+      - dpu_hbn: enable DPU/HBN offload for the east-west network — GPU hosts connect through
+        a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's
+        HBN toggle. Only meaningful when enable_east_west_networking is true. Devices on an HBN
+        fabric are managed with fabricapi_vf_interfaces/fabricapi_vf_assign (see
+        examples/decoupled/06-vf-interfaces and 07-vf-assign), not the server/GPU allocation
+        resources.
   EOT
   type = object({
     enable_east_west_networking   = optional(bool, true)
@@ -60,6 +66,7 @@ variable "network_config" {
     dedicated_storage             = optional(bool, false)
     starting_subnet_cpu           = optional(string)
     starting_subnet_storage       = optional(string)
+    dpu_hbn                       = optional(bool, false)
   })
 }
 

@@ -63,6 +63,7 @@ type FabricNetworkConfigModel struct {
 	DedicatedStorage           types.Bool   `tfsdk:"dedicated_storage"`
 	StartingSubnetCpu          types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage      types.String `tfsdk:"starting_subnet_storage"`
+	DpuHbn                     types.Bool   `tfsdk:"dpu_hbn"`
 }
 
 type FabricResourceModel struct {
@@ -227,6 +228,14 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						MarkdownDescription: "Starting subnet for storage NICs, e.g. \"10.3\". Required when `dedicated_storage` is true.",
 						Optional:            true,
 					},
+					"dpu_hbn": schema.BoolAttribute{
+						MarkdownDescription: "Enable DPU/HBN offload for the east-west network — GPU hosts connect through a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's HBN toggle. Only meaningful when `enable_east_west_networking` is true. Defaults to false if unset. Devices discovered on an HBN fabric are read with `fabricapi_vf_interfaces` and bound to a tenant with `fabricapi_vf_assign`, not through the whole-server/per-GPU allocation resources.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
 				},
 			},
 			"id": schema.StringAttribute{
@@ -286,6 +295,10 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	nsOperatingSystem := "cumulus"
 	if !data.NetworkConfig.NsOperatingSystem.IsNull() && !data.NetworkConfig.NsOperatingSystem.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NsOperatingSystem.ValueString()) != "" {
 		nsOperatingSystem = data.NetworkConfig.NsOperatingSystem.ValueString()
+	}
+	dpuHbn := false
+	if !data.NetworkConfig.DpuHbn.IsNull() && !data.NetworkConfig.DpuHbn.IsUnknown() {
+		dpuHbn = data.NetworkConfig.DpuHbn.ValueBool()
 	}
 	// Always ONES-managed — not exposed as an input. The ONES UI's "Tenant
 	// control" radio (isOnesControlled=false, "External") is what unlocks the
@@ -385,6 +398,8 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		OperatingSystemE: "cumulus",
 		OperatingSystemF: nsOperatingSystem,
 		OperatingSystemS: nsOperatingSystem,
+
+		DpuHbn: dpuHbn,
 	}
 
 	respBody, err := r.client.CreateFabricData(ctx, reqBody)
