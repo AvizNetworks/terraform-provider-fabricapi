@@ -96,8 +96,9 @@ type FabricDataRequest struct {
 
 	// North-South (front-end user/storage) networking — mirrors the ONES UI's
 	// "N-S (Front-End) Network" section in FabricNetwork.jsx. IsONESControlled
-	// is always true here (matching the UI's default for RA/DNO fabrics), which
-	// is why StartingSubnetTenants is optional rather than required.
+	// comes from su_config.tenant_control ("ones" -> true, the UI's default;
+	// "external" -> false). StartingSubnetTenants (the tenant compute IP pool,
+	// sent as "X.0") is only used with External tenant control.
 	EnableNS              bool   `json:"enableNS"`
 	IsONESControlled      bool   `json:"isOnesControlled"`
 	UserAndStorage        bool   `json:"userandstorage"`
@@ -141,6 +142,26 @@ type FabricDataRequest struct {
 	// radios in the N-S network step.
 	IsVxlanFabric      bool `json:"isVxlanFabric"`
 	StorageTenantAware bool `json:"storageTenantAware"`
+
+	// Fields the ONES UI sends that the backend stores on the fabric record and
+	// reads back later (FabricNetwork.jsx handleSubmit / edit mode). All are
+	// derived by the provider, not set directly:
+	//   - GpuScaleMode/NetworkType/ScaleUpNvLink: E-W technology, from
+	//     network_type + node_type (gpuScaleModeFor). NetworkType uses the UI's
+	//     "infinyband" spelling. ONES only loads NMXC GPU inventory when
+	//     GpuScaleMode contains SCALE_UP.
+	//   - SuSize: B300 SU size (32/64) from node_type; without it the backend
+	//     builds 64-node B300 SUs as 32-node.
+	//   - Hybrid: true for SONiC N-S (the UI reopens the OS radio from it).
+	//   - Dedicated: mirrors dedicatedStorage (the UI reopens the switch from it).
+	GpuScaleMode   string `json:"gpuScaleMode"`
+	NetworkType    string `json:"networkType"`
+	ScaleUpNvLink  bool   `json:"scaleUpNvLink"`
+	SuSize         int    `json:"suSize,omitempty"`
+	Hybrid         bool   `json:"hybrid"`
+	Dedicated      bool   `json:"dedicated"`
+	EwTenantAware  bool   `json:"ewTenantAware"`
+	DeploymentType string `json:"deploymentType"`
 }
 
 // rawTokenHeaderValue strips any "Bearer "/"bearer " prefix so the token is sent
