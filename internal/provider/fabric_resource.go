@@ -43,26 +43,37 @@ type FabricSuConfigModel struct {
 	MaxNumberOfSUs types.Int64  `tfsdk:"max_number_of_sus"`
 	HostsPerSU     types.String `tfsdk:"hosts_per_su"`
 	HostMap        types.Map    `tfsdk:"host_map"`
+	// RackHostMap is the gb200/gb300-only host layout: SU index -> {rack name ->
+	// host count}, matching the ONES UI's rack/node picker for those node types
+	// (FabricSuConfig.jsx). Ignored for every other node_type. See the schema
+	// description for why this can't just be host_map with a looser element type.
+	RackHostMap types.Map `tfsdk:"rack_host_map"`
 	// TenantCtrl is the addFabricData `tenant` field (always effectively
 	// "ones" in practice) — NOT the ONES UI's separate "Tenant control"
-	// ONES/External radio (isOnesControlled), which this provider doesn't
-	// expose since external-tenant mode isn't implemented. Kept as
-	// `tenant_ctrl` rather than a "tenant_control"-style name specifically to
-	// avoid that mix-up.
-	TenantCtrl   types.String `tfsdk:"tenant_ctrl"`
-	SimulationID types.Int64  `tfsdk:"simulation_id"`
+	// ONES/External radio (isOnesControlled), which is TenantControl below.
+	TenantCtrl types.String `tfsdk:"tenant_ctrl"`
+	// TenantControl is the ONES UI's "Tenant control" ONES/External radio
+	// (FabricSuConfig.jsx), sent as isOnesControlled.
+	TenantControl types.String `tfsdk:"tenant_control"`
+	SimulationID  types.Int64  `tfsdk:"simulation_id"`
 }
 
 // FabricNetworkConfigModel groups east-west and north-south networking
 // configuration under a single nested attribute.
 type FabricNetworkConfigModel struct {
 	EnableEastWestNetworking   types.Bool   `tfsdk:"enable_east_west_networking"`
+	NetworkType                types.String `tfsdk:"network_type"`
 	StartingSubnetGpu          types.String `tfsdk:"starting_subnet_gpu"`
+	EwTenantAware              types.Bool   `tfsdk:"ew_tenant_aware"`
+	StartingSubnetTenants      types.String `tfsdk:"starting_subnet_tenants"`
 	EnableNorthSouthNetworking types.Bool   `tfsdk:"enable_north_south_networking"`
 	NsOperatingSystem          types.String `tfsdk:"ns_operating_system"`
 	DedicatedStorage           types.Bool   `tfsdk:"dedicated_storage"`
 	StartingSubnetCpu          types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage      types.String `tfsdk:"starting_subnet_storage"`
+	DpuHbn                     types.Bool   `tfsdk:"dpu_hbn"`
+	IsVxlanFabric              types.Bool   `tfsdk:"is_vxlan_fabric"`
+	StorageTenantAware         types.Bool   `tfsdk:"storage_tenant_aware"`
 }
 
 type FabricResourceModel struct {
@@ -151,7 +162,7 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 						Required:            true,
 					},
 					"host_map": schema.MapAttribute{
-						MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data.",
+						MarkdownDescription: "SU index -> host count, matching the addFabricData `hostMap` field (e.g. {\"0\" = \"1\"}). Optional: if unset, it is derived automatically from `hosts_per_su` (e.g. \"{0:1}\" -> {\"0\" = \"1\"}), since the API requires both fields to carry the same data. Ignored when `rack_host_map` is set (gb200/gb300 only).",
 						Optional:            true,
 						Computed:            true,
 						ElementType:         types.StringType,
@@ -159,9 +170,34 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							mapplanmodifier.UseStateForUnknown(),
 						},
 					},
+					"rack_host_map": schema.MapAttribute{
+						MarkdownDescription: "**gb200/gb300 only.** SU index -> {rack name -> host count}, e.g. " +
+							"`{\"0\" = {\"rack1\" = \"5\", \"rack2\" = \"6\", \"rack3\" = \"4\"}}` for a gb300 SU with 3 " +
+							"racks. The addFabricData `hostMap` field needs this nested shape for `node_type` " +
+							"\"gb200\"/\"gb300\" to get the right rack-based hosts (`su00-rack00-node00`, ...), and is " +
+							"**required** for those node types: a flat count would be applied to every rack, " +
+							"multiplying the hosts. Rack keys must be exactly " +
+							"\"rack1\"/\"rack2\"/\"rack3\" (gb300: 3 racks; gb200: 2), max 18 nodes/rack, matching " +
+							"the ONES UI's rack/node picker. When set, takes precedence over `host_map`/`hosts_per_su` " +
+							"for the request's `hostMap` field — but `hosts_per_su` is still required and must be " +
+							"set to the same data as raw JSON (e.g. `\"{\\\"0\\\":{\\\"rack1\\\":\\\"5\\\",\\\"rack2\\\":\\\"6\\\",\\\"rack3\\\":\\\"4\\\"}}\"`), matching how the ONES UI round-trips `suHostCnt` for these node types.",
+						Optional:    true,
+						ElementType: types.MapType{ElemType: types.StringType},
+					},
 					"tenant_ctrl": schema.StringAttribute{
-						MarkdownDescription: "Tenant context for the addFabricData call, e.g. \"ones\". Unrelated to the ONES UI's ONES/External \"Tenant control\" radio, which this provider doesn't expose.",
+						MarkdownDescription: "Tenant context for the addFabricData call (`tenant`), e.g. \"ones\". Unrelated to the ONES UI's ONES/External \"Tenant control\" radio — that is `tenant_control`.",
 						Required:            true,
+					},
+					"tenant_control": schema.StringAttribute{
+						MarkdownDescription: "The ONES UI's \"Tenant control\" radio: \"ones\" (tenants managed in ONES, the default) or \"external\" (tenants managed by an external integrated service). Sent as `isOnesControlled` (true for \"ones\", false for \"external\"). With \"external\", `network_config.starting_subnet_tenants` is required when north-south networking is enabled, and `network_config.ew_tenant_aware` must be false.",
+						Optional:            true,
+						Computed:            true,
+						Validators: []validator.String{
+							stringvalidator.OneOf(tenantControlOnes, tenantControlExternal),
+						},
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.UseStateForUnknown(),
+						},
 					},
 					"simulation_id": schema.Int64Attribute{
 						MarkdownDescription: "Raw `simulationId` value expected by the API. Defaults to 1 if unset.",
@@ -188,8 +224,31 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							boolplanmodifier.UseStateForUnknown(),
 						},
 					},
+					"network_type": schema.StringAttribute{
+						MarkdownDescription: "E-W technology: \"ethernet\" or \"infiniband\", matching the ONES UI's \"Technology\" radio. Only valid when `enable_east_west_networking` is true. Defaults to \"infiniband\" for node_type \"gb200\" (the UI forces it) and \"ethernet\" otherwise. NVIDIA SpX RA 2.1 only supports \"ethernet\"; gb200 only supports \"infiniband\". The provider derives the fabric's `gpuScaleMode` from this and `node_type` the same way the UI does (e.g. SCALE_OUT_ETH, SCALE_OUT_IB, SCALE_OUT_SCALE_UP_IB for GB200/GB300 NVLink scale-up). With \"infiniband\", no GPU subnet is used and the request is sent with `enableEW = false`, as the UI does (InfiniBand is UFM-managed, so no E-W switches are generated).",
+						Optional:            true,
+						Computed:            true,
+						Validators: []validator.String{
+							stringvalidator.OneOf(networkTypeEthernet, networkTypeInfiniband),
+						},
+						PlanModifiers: []planmodifier.String{
+							stringplanmodifier.UseStateForUnknown(),
+						},
+					},
 					"starting_subnet_gpu": schema.StringAttribute{
-						MarkdownDescription: "Starting GPU subnet, e.g. \"192\". Required when `enable_east_west_networking` is true; not needed otherwise.",
+						MarkdownDescription: "Starting GPU subnet first octet: \"10\", \"172\" or \"192\". Required when `enable_east_west_networking` is true with Ethernet; must be unset for InfiniBand. For NVIDIA SpX RA 2.1 it is fixed to \"172\" (sent automatically when unset).",
+						Optional:            true,
+					},
+					"ew_tenant_aware": schema.BoolAttribute{
+						MarkdownDescription: "The ONES UI's E-W \"Tenant aware\" Yes/No: whether the GPU (E-W) network is isolated per tenant. Only for Ethernet E-W, and must be false when `su_config.tenant_control` is \"external\". Defaults to false.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"starting_subnet_tenants": schema.StringAttribute{
+						MarkdownDescription: "The ONES UI's \"Tenant Compute IP Pool\": first octet \"10\", \"172\" or \"192\", sent as \"X.0\". Only used (and then required, when north-south networking is enabled) with `su_config.tenant_control = \"external\"`. Must not overlap the GPU subnet.",
 						Optional:            true,
 					},
 					"enable_north_south_networking": schema.BoolAttribute{
@@ -226,6 +285,30 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 					"starting_subnet_storage": schema.StringAttribute{
 						MarkdownDescription: "Starting subnet for storage NICs, e.g. \"10.3\". Required when `dedicated_storage` is true.",
 						Optional:            true,
+					},
+					"dpu_hbn": schema.BoolAttribute{
+						MarkdownDescription: "Enable DPU/HBN offload for the east-west network — GPU hosts connect through a BlueField DPU running HBN instead of directly to the E-W leaf, matching the ONES UI's HBN toggle. Only meaningful when `enable_east_west_networking` is true. Defaults to false if unset. Devices discovered on an HBN fabric are read with `fabricapi_vf_interfaces` and bound to a tenant with `fabricapi_vf_assign`, not through the whole-server/per-GPU allocation resources. The ONES UI forces `is_vxlan_fabric` to VXLAN whenever this is true; so does the provider (it is set to true when unset, and `is_vxlan_fabric = false` is rejected).",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"is_vxlan_fabric": schema.BoolAttribute{
+						MarkdownDescription: "Tenant segmentation mechanism: `true` for VXLAN (overlay), `false` for VLAN — matching the ONES UI's \"Tenant Segmentation\" radio in the N-S network step. A fabric-wide choice applied to every tenant's generated config (Fabrics.isVxlanFabric on the backend, consumed by SpectrumMultiTenancyConfig/SpectrumVrfLiteConfig), not a per-tenant setting. Defaults to `false` (VLAN) if unset, matching the UI's default for a new fabric — except where the UI forces VXLAN: `dpu_hbn = true`, or SONiC N-S on fabric types other than Aviz RA 1.0.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
+					},
+					"storage_tenant_aware": schema.BoolAttribute{
+						MarkdownDescription: "Whether storage NICs participate in tenant isolation, matching the ONES UI's \"Tenant aware (Storage)\" Yes/No toggle in the N-S network step. Defaults to `false` if unset, matching the UI's default — except SONiC N-S on fabric types other than Aviz RA 1.0, where the UI forces it to true.",
+						Optional:            true,
+						Computed:            true,
+						PlanModifiers: []planmodifier.Bool{
+							boolplanmodifier.UseStateForUnknown(),
+						},
 					},
 				},
 			},
@@ -287,11 +370,36 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	if !data.NetworkConfig.NsOperatingSystem.IsNull() && !data.NetworkConfig.NsOperatingSystem.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NsOperatingSystem.ValueString()) != "" {
 		nsOperatingSystem = data.NetworkConfig.NsOperatingSystem.ValueString()
 	}
-	// Always ONES-managed — not exposed as an input. The ONES UI's "Tenant
-	// control" radio (isOnesControlled=false, "External") is what unlocks the
-	// "Tenant Compute IP Pool" field (startingSubnetTenants); since that mode
-	// isn't supported here, startingSubnetTenants is never applicable either.
-	const isOnesControlled = true
+	dpuHbn := false
+	if !data.NetworkConfig.DpuHbn.IsNull() && !data.NetworkConfig.DpuHbn.IsUnknown() {
+		dpuHbn = data.NetworkConfig.DpuHbn.ValueBool()
+	}
+	// Defaults match the ONES UI for a new fabric (FabricNetwork.jsx formData):
+	// VLAN, storage not tenant aware. applyForcedDefaults later overrides the
+	// unset ones where the UI forces a value (SONiC on SpX, DPU HBN).
+	isVxlanFabric := false
+	isVxlanFabricSet := !data.NetworkConfig.IsVxlanFabric.IsNull() && !data.NetworkConfig.IsVxlanFabric.IsUnknown()
+	if isVxlanFabricSet {
+		isVxlanFabric = data.NetworkConfig.IsVxlanFabric.ValueBool()
+	}
+	storageTenantAware := false
+	storageTenantAwareSet := !data.NetworkConfig.StorageTenantAware.IsNull() && !data.NetworkConfig.StorageTenantAware.IsUnknown()
+	if storageTenantAwareSet {
+		storageTenantAware = data.NetworkConfig.StorageTenantAware.ValueBool()
+	}
+	tenantControl := tenantControlOnes
+	if !data.SuConfig.TenantControl.IsNull() && !data.SuConfig.TenantControl.IsUnknown() && strings.TrimSpace(data.SuConfig.TenantControl.ValueString()) != "" {
+		tenantControl = data.SuConfig.TenantControl.ValueString()
+	}
+	networkType := ""
+	networkTypeSet := !data.NetworkConfig.NetworkType.IsNull() && !data.NetworkConfig.NetworkType.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NetworkType.ValueString()) != ""
+	if networkTypeSet {
+		networkType = data.NetworkConfig.NetworkType.ValueString()
+	}
+	ewTenantAware := false
+	if !data.NetworkConfig.EwTenantAware.IsNull() && !data.NetworkConfig.EwTenantAware.IsUnknown() {
+		ewTenantAware = data.NetworkConfig.EwTenantAware.ValueBool()
+	}
 	dedicatedStorage := false
 	if !data.NetworkConfig.DedicatedStorage.IsNull() && !data.NetworkConfig.DedicatedStorage.IsUnknown() {
 		dedicatedStorage = data.NetworkConfig.DedicatedStorage.ValueBool()
@@ -311,49 +419,102 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	startingSubnetGpu := data.NetworkConfig.StartingSubnetGpu.ValueString()
 	startingSubnetCpu := data.NetworkConfig.StartingSubnetCpu.ValueString()
 	startingSubnetStorage := data.NetworkConfig.StartingSubnetStorage.ValueString()
-	// Error text below matches the ONES UI's own validation messages
-	// (selfcare/src/ui-v2/pages/inventory/FabricNetwork.jsx handleSubmit)
-	// where an equivalent check exists, so the same failure reads the same
-	// way whether it's hit from the UI or from this provider.
-	if enableEW && strings.TrimSpace(startingSubnetGpu) == "" {
-		resp.Diagnostics.AddError(
-			"Please enter a valid GPU Subnet",
-			"network_config.starting_subnet_gpu is required when enable_east_west_networking is true.",
-		)
-		return
-	}
-	if enableNS && strings.TrimSpace(startingSubnetCpu) == "" {
-		resp.Diagnostics.AddError(
-			"Please enter a valid CPU Subnet",
-			"network_config.starting_subnet_cpu is required when enable_north_south_networking is true (used as the shared user/storage subnet, or the CPU subnet when dedicated_storage is also true).",
-		)
-		return
-	}
-	if dedicatedStorage && strings.TrimSpace(startingSubnetStorage) == "" {
-		resp.Diagnostics.AddError(
-			"Please enter a valid Storage Subnet",
-			"network_config.starting_subnet_storage is required when dedicated_storage is true.",
-		)
-		return
-	}
-	hostMap := map[string]string{}
-	if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
-		resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &hostMap, false)...)
+	startingSubnetTenants := data.NetworkConfig.StartingSubnetTenants.ValueString()
+	hostMap := map[string]any{}
+	usingRackHostMap := !data.SuConfig.RackHostMap.IsNull() && !data.SuConfig.RackHostMap.IsUnknown() && len(data.SuConfig.RackHostMap.Elements()) > 0
+	var flatHostMap map[string]string
+	var rackHostMap map[string]map[string]string
+	if usingRackHostMap {
+		// gb200/gb300 rack layout — nested per-SU object, never flattened. Takes
+		// precedence over host_map/hosts_per_su-derivation; see the schema
+		// description for why the API needs this exact shape for rack naming.
+		rackHostMap = map[string]map[string]string{}
+		resp.Diagnostics.Append(data.SuConfig.RackHostMap.ElementsAs(ctx, &rackHostMap, false)...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
-	}
-	if len(hostMap) == 0 {
-		derived, err := hostMapFromHostsPerSu(data.SuConfig.HostsPerSU.ValueString())
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"Invalid su_config.hosts_per_su",
-				fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.SuConfig.HostsPerSU.ValueString(), err),
-			)
-			return
+		for su, racks := range rackHostMap {
+			hostMap[su] = racks
 		}
-		hostMap = derived
+	} else {
+		flatHostMap = map[string]string{}
+		if !data.SuConfig.HostMap.IsNull() && !data.SuConfig.HostMap.IsUnknown() {
+			resp.Diagnostics.Append(data.SuConfig.HostMap.ElementsAs(ctx, &flatHostMap, false)...)
+			if resp.Diagnostics.HasError() {
+				return
+			}
+		}
+		if len(flatHostMap) == 0 {
+			derived, err := hostMapFromHostsPerSu(data.SuConfig.HostsPerSU.ValueString())
+			if err != nil && isRackNodeType(nodeType) {
+				// gb200/gb300 need rack_host_map; validate reports that clearly.
+				derived, err = map[string]string{}, nil
+			}
+			if err != nil {
+				resp.Diagnostics.AddError(
+					"Invalid su_config.hosts_per_su",
+					fmt.Sprintf("Unable to derive host_map from hosts_per_su %q: %s", data.SuConfig.HostsPerSU.ValueString(), err),
+				)
+				return
+			}
+			flatHostMap = derived
+		}
+		for su, count := range flatHostMap {
+			hostMap[su] = count
+		}
 	}
+
+	in := fabricInput{
+		Type:                  data.Type.ValueString(),
+		NodeType:              nodeType,
+		NumOfSUs:              int(data.SuConfig.NumberOfSUs.ValueInt64()),
+		MaxNumOfSUs:           int(data.SuConfig.MaxNumberOfSUs.ValueInt64()),
+		FlatHostMap:           flatHostMap,
+		RackHostMap:           rackHostMap,
+		TenantControl:         tenantControl,
+		EnableEW:              enableEW,
+		NetworkType:           networkType,
+		NetworkTypeSet:        networkTypeSet,
+		StartingSubnetGpu:     startingSubnetGpu,
+		EwTenantAware:         ewTenantAware,
+		EnableNS:              enableNS,
+		NsOperatingSystem:     nsOperatingSystem,
+		DedicatedStorage:      dedicatedStorage,
+		StartingSubnetCpu:     startingSubnetCpu,
+		StartingSubnetStorage: startingSubnetStorage,
+		StartingSubnetTenants: startingSubnetTenants,
+		DpuHbn:                dpuHbn,
+		IsVxlanFabric:         isVxlanFabric,
+		IsVxlanFabricSet:      isVxlanFabricSet,
+		StorageTenantAware:    storageTenantAware,
+		StorageTenantAwareSet: storageTenantAwareSet,
+	}
+	in.applyForcedDefaults()
+	// Error summaries match the ONES UI's own validation messages
+	// (FabricSuConfig.jsx, FabricNetwork.jsx, NewHostPerSu.jsx) where an
+	// equivalent check exists, so the same failure reads the same way whether
+	// it's hit from the UI or from this provider.
+	if issues := in.validate(); len(issues) > 0 {
+		for _, issue := range issues {
+			resp.Diagnostics.AddError(issue.Summary, issue.Detail)
+		}
+		return
+	}
+
+	gpuScaleMode, scaleUpNvLink := gpuScaleModeFor(in.Type, in.NodeType, in.NetworkType, in.EnableEW)
+	// The UI sends enableEW=false for InfiniBand (payloadToSend): UFM manages
+	// that network, so no E-W switches are generated.
+	sendEnableEW := in.EnableEW && in.NetworkType != networkTypeInfiniband
+	sendGpuSubnet := ""
+	if sendEnableEW {
+		sendGpuSubnet = in.StartingSubnetGpu
+	}
+	sendTenants := ""
+	if in.EnableNS && in.TenantControl == tenantControlExternal && strings.TrimSpace(in.StartingSubnetTenants) != "" {
+		sendTenants = strings.TrimSpace(in.StartingSubnetTenants) + ".0"
+	}
+	// Tenant aware (E-W) is forced off when tenants are managed externally.
+	sendEwTenantAware := in.EwTenantAware && in.TenantControl != tenantControlExternal
 
 	reqBody := FabricDataRequest{
 		Name:              data.Name.ValueString(),
@@ -363,21 +524,22 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		NumOfSUs:          int(data.SuConfig.NumberOfSUs.ValueInt64()),
 		MaxNumOfSUs:       int(data.SuConfig.MaxNumberOfSUs.ValueInt64()),
 		HostMap:           hostMap,
-		StartingSubnetGPU: startingSubnetGpu,
+		StartingSubnetGPU: sendGpuSubnet,
 		SimulationID:      int(simulationID),
-		EnableEW:          enableEW,
+		EnableEW:          sendEnableEW,
 		SUHostCount:       data.SuConfig.HostsPerSU.ValueString(),
 		Tenant:            data.SuConfig.TenantCtrl.ValueString(),
 		Instance:          instance,
 		NodeType:          nodeType,
 
 		EnableNS:              enableNS,
-		IsONESControlled:      isOnesControlled,
+		IsONESControlled:      in.TenantControl != tenantControlExternal,
 		UserAndStorage:        userAndStorage,
 		DedicatedStorage:      dedicatedStorage,
 		FrontendStorage:       frontendStorage,
 		StartingSubnetCPU:     startingSubnetCpu,
 		StartingSubnetStorage: startingSubnetStorage,
+		StartingSubnetTenants: sendTenants,
 
 		// East-west is always Cumulus in the ONES UI (not user-selectable there);
 		// front-end/storage (north-south) OS is user-selectable and must match
@@ -385,6 +547,19 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		OperatingSystemE: "cumulus",
 		OperatingSystemF: nsOperatingSystem,
 		OperatingSystemS: nsOperatingSystem,
+
+		DpuHbn:             dpuHbn,
+		IsVxlanFabric:      in.IsVxlanFabric,
+		StorageTenantAware: in.StorageTenantAware,
+
+		GpuScaleMode:   gpuScaleMode,
+		NetworkType:    wireNetworkType(in.NetworkType),
+		ScaleUpNvLink:  scaleUpNvLink,
+		SuSize:         suSizeFor(nodeType),
+		Hybrid:         enableNS && nsOperatingSystem == "sonic",
+		Dedicated:      enableNS && dedicatedStorage,
+		EwTenantAware:  sendEwTenantAware,
+		DeploymentType: "DEFAULT",
 	}
 
 	respBody, err := r.client.CreateFabricData(ctx, reqBody)
@@ -404,14 +579,31 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	data.NetworkConfig.EnableNorthSouthNetworking = types.BoolValue(enableNS)
 	data.NetworkConfig.NsOperatingSystem = types.StringValue(nsOperatingSystem)
 	data.NetworkConfig.DedicatedStorage = types.BoolValue(dedicatedStorage)
+	data.NetworkConfig.DpuHbn = types.BoolValue(dpuHbn)
+	data.NetworkConfig.IsVxlanFabric = types.BoolValue(in.IsVxlanFabric)
+	data.NetworkConfig.StorageTenantAware = types.BoolValue(in.StorageTenantAware)
+	data.NetworkConfig.EwTenantAware = types.BoolValue(sendEwTenantAware)
+	data.SuConfig.TenantControl = types.StringValue(in.TenantControl)
+	if in.EnableEW {
+		data.NetworkConfig.NetworkType = types.StringValue(in.NetworkType)
+	} else {
+		data.NetworkConfig.NetworkType = types.StringNull()
+	}
 	data.ID = types.StringValue(data.Name.ValueString())
 
-	hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, hostMap)
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
+	if usingRackHostMap {
+		// host_map carries flat string values only (see schema); it genuinely
+		// doesn't apply in rack mode, so write back null rather than attempting
+		// to force the nested rack data into that shape.
+		data.SuConfig.HostMap = types.MapNull(types.StringType)
+	} else {
+		hostMapValue, diags := types.MapValueFrom(ctx, types.StringType, flatHostMap)
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+		data.SuConfig.HostMap = hostMapValue
 	}
-	data.SuConfig.HostMap = hostMapValue
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
