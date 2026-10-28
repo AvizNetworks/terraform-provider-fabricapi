@@ -198,6 +198,13 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewFabricResource,
 		NewFabricDeployResource,
 		NewInventorySyncResource,
+		NewNetworkPolicyResource,
+		NewWebhookResource,
+		NewFabricWebhookResource,
+		NewTenantWebhookResource,
+		NewIpamConfigResource,
+		NewDhcpReconcileResource,
+		NewTenantDhcpRetryResource,
 	}
 }
 
@@ -207,5 +214,14 @@ func (p *FabricAPIProvider) DataSources(ctx context.Context) []func() datasource
 		NewAvailableServersDataSource,
 		NewVfInterfacesDataSource,
 		NewFabricYamlDataSource,
+		NewNetworkPoliciesDataSource,
+		NewWebhooksDataSource,
+		NewIpamConfigDataSource,
+		NewServerIPAddressesDataSource,
+		NewTenantComputeIPDataSource,
+		NewTenantIPAddressesDataSource,
+		NewTenantDhcpDataSource,
+		NewRailCidrPoolsDataSource,
+		NewRailCidrPoolDataSource,
 	}
 }

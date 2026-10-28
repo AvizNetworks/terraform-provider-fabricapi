@@ -46,6 +46,11 @@ Each root keeps **its own** state file. Reuse the same `-state=...` path when co
 | `07-vf-assign` | `states/e2e_vf_assign.tfstate` | Resource — destroy to unbind VF |
 | `03-vpcpeering` | `states/e2e_vpc.tfstate` | Resource — see VPC peering notes in Docker/Make README |
 | `08-fabric` | `states/e2e_fabric.tfstate` | Resources — fabric destroy always deletes remotely; deploy destroy is state-only |
+| `09-network-policy` | `states/e2e_network_policy.tfstate` | Resource — destroy deletes the policy and its device config |
+| `10-webhooks` | `states/e2e_webhooks.tfstate` | Resources — destroy deletes the registrations |
+| `11-ipam` | `states/e2e_ipam.tfstate` | Resource — destroy turns IPAM off |
+| `12-dhcp` | `states/e2e_dhcp.tfstate` | Data source + action resources — destroy is state-only |
+| `13-rail-cidrpools` | `states/e2e_rails.tfstate` | **Data sources only** — refreshed each apply; no destroy needed |
 
 Use a **new state filename** when starting a different tenant or a clean run.
 
@@ -68,6 +73,11 @@ mkdir -p examples/decoupled/04-gpus/states
 mkdir -p examples/decoupled/05-available-servers/states
 mkdir -p examples/decoupled/06-vf-interfaces/states
 mkdir -p examples/decoupled/07-vf-assign/states
+mkdir -p examples/decoupled/09-network-policy/states
+mkdir -p examples/decoupled/10-webhooks/states
+mkdir -p examples/decoupled/11-ipam/states
+mkdir -p examples/decoupled/12-dhcp/states
+mkdir -p examples/decoupled/13-rail-cidrpools/states
 mkdir -p examples/decoupled/08-fabric/states
 
 rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
@@ -465,6 +475,150 @@ terraform -chdir=examples/decoupled/08-fabric destroy -auto-approve \
   -var="enable_ew=true" \
   -var="hosts_per_su={0:1}" \
   -var="tenant_ctrl=ones"
+```
+
+---
+
+## Fabric Manager 4.4 APIs (09–13)
+
+Network policy, webhook registration, IPAM, tenant DHCP and rail CIDRPools are served by Fabric Manager itself. The ONES UI gateway (`https://<ones-host>/api/fm/...`) doesn't proxy them — it answers with the UI's HTML page, which the provider reports as an error — so point the provider at Fabric Manager on port 8443 and log in through ONES:
+
+```bash
+export FABRIC_API_ENDPOINT="https://<ones-host>:8443"
+export FABRIC_API_AUTH_ENDPOINT="https://<ones-host>/api/user"
+export FABRIC_API_USERNAME="superadmin"
+export FABRIC_API_PASSWORD="YOUR_PASSWORD"
+export FABRICAPI_INSECURE_TLS=1
+export FABRIC_NAME="my_fabric"
+```
+
+All of these calls are synchronous (no `prefer`/operation polling). Network policy and IPAM config only work on fabrics created with **External** tenant control (`su_config.tenant_control = "external"` in `08-fabric`); DHCP additionally needs a VXLAN fabric with a Kea server. Fabric Manager answers `409 FABRIC_NOT_EXTERNALLY_MANAGED` otherwise.
+
+| Root | Terraform types | Needs |
+|------|-----------------|-------|
+| `09-network-policy` | `fabricapi_network_policy`, data `fabricapi_network_policies` | Deployed fabric with both tenants |
+| `10-webhooks` | `fabricapi_webhook`, `fabricapi_fabric_webhook`, `fabricapi_tenant_webhook`, data `fabricapi_webhooks` | Nothing — works on any fabric |
+| `11-ipam` | `fabricapi_ipam_config`, data `fabricapi_ipam_config`, `fabricapi_tenant_ip_addresses`, `fabricapi_server_ip_addresses`, `fabricapi_tenant_compute_ip` | External fabric; address lookups need tenants with allotted servers |
+| `12-dhcp` | data `fabricapi_tenant_dhcp`, `fabricapi_dhcp_reconcile`, `fabricapi_tenant_dhcp_retry` | IPAM in DHCP mode, Kea server |
+| `13-rail-cidrpools` | data `fabricapi_rail_cidr_pools`, `fabricapi_rail_cidr_pool` | SpectrumX fabric with L3 East-West rails |
+
+## 09 - Network policy
+
+`fabricapi_network_policy` allows traffic from a source to a destination. Shapes: tenant → tenant (whole-tenant route leak, no endpoints), tenant → service (destination endpoints), service → service (endpoints on both sides). Fabric Manager pushes the config to the border/combined leaves, DPUs or spines before answering, so an apply can take a while.
+
+- **Adding endpoints** updates the policy in place (PATCH with only the new ones).
+- **Removing an endpoint**, or changing a side's `type`/`tenant_name`/`service_name`, **replaces** the policy (delete, then create) — Fabric Manager can only add endpoints. The plan shows this as `-/+`.
+- On a service → service policy, adding source endpoints alone also replaces it (Fabric Manager requires new destination endpoints in every update).
+- Names are at most 24 characters and unique per fabric. Import with `terraform import fabricapi_network_policy.this <fabric>/<name>`.
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/09-network-policy apply -auto-approve \
+  -state=states/e2e_network_policy.tfstate \
+  -var="policy_name=tenantA-to-storage" \
+  -var="source_tenant=TenantA" \
+  -var="destination_tenant=TenantB" \
+  -var="service_name=storage" \
+  -var='destination_endpoints=["192.2.127.129/32"]'
+
+# Add an endpoint (in-place update)
+terraform -chdir=examples/decoupled/09-network-policy apply -auto-approve \
+  -state=states/e2e_network_policy.tfstate \
+  -var="policy_name=tenantA-to-storage" -var="source_tenant=TenantA" -var="destination_tenant=TenantB" \
+  -var="service_name=storage" \
+  -var='destination_endpoints=["192.2.127.129/32","192.2.127.130/32"]'
+
+# Delete the policy and its device config
+terraform -chdir=examples/decoupled/09-network-policy destroy -auto-approve \
+  -state=states/e2e_network_policy.tfstate \
+  -var="policy_name=tenantA-to-storage" -var="source_tenant=TenantA" -var="destination_tenant=TenantB"
+```
+
+## 10 - Webhooks
+
+Three independent kinds of registration; an event that matches several is delivered to each.
+
+- `fabricapi_webhook` — global (`/webhooks`): chosen `event_types` from every fabric and tenant, optionally narrowed by `filter_fabric_names`/`filter_tenant_names`. Fabric Manager keys these on `callback_url`: registering a URL that already exists adopts that registration (with a warning).
+- `fabricapi_fabric_webhook` — one per fabric: `fabric.deploy`, `fabric.delete`.
+- `fabricapi_tenant_webhook` — one per tenant: `tenant.create`, `tenant.delete`, `tenant.allocate`, `tenant.deallocate`, `tenant.vpcpeering`. Don't combine it with `webhooks_enabled = true` on `fabricapi_tenant` for the same tenant: async tenant operations re-register this same registration with their own URL.
+
+`event_types` takes the canonical names above (not the `fabric.tenant_*` aliases). If a fabric or tenant already has a registration, create fails with an import hint instead of overwriting it. Fabric Manager rejects loopback callback URLs and, depending on its `webhook.allow-insecure-urls` setting, plain-HTTP or private-address ones. Deliveries are signed with HMAC-SHA256 in `X-Webhook-Signature`.
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/10-webhooks apply -auto-approve \
+  -state=states/e2e_webhooks.tfstate \
+  -var="callback_url=https://hooks.example.com/ones" \
+  -var='event_types=["fabric.deploy","tenant.create"]' \
+  -var='filter_fabric_names=["my_fabric"]' \
+  -var="fabric_callback_url=https://hooks.example.com/ones-fabric"
+
+# Pause deliveries without deleting
+terraform -chdir=examples/decoupled/10-webhooks apply -auto-approve \
+  -state=states/e2e_webhooks.tfstate \
+  -var="callback_url=https://hooks.example.com/ones" -var="enabled=false" \
+  -var='event_types=["fabric.deploy","tenant.create"]' -var='filter_fabric_names=["my_fabric"]' \
+  -var="fabric_callback_url=https://hooks.example.com/ones-fabric"
+
+terraform -chdir=examples/decoupled/10-webhooks destroy -auto-approve \
+  -state=states/e2e_webhooks.tfstate -var="callback_url=https://hooks.example.com/ones"
+```
+
+## 11 - IPAM
+
+`fabricapi_ipam_config` turns IPAM on in `static` or `dhcp` mode; tenants created afterwards get an address pool (existing tenants aren't re-addressed). `destroy` turns IPAM off — Fabric Manager refuses while any server still holds an address (`409 IPAM_HAS_ALLOCATIONS`); with unused pools left, set `force = true`. Changing `mode` replaces the resource (IPAM off, then on in the new mode), since Fabric Manager won't switch directly.
+
+DHCP mode needs a Kea server configured for the fabric and a `dhcp-host-NN` node in its intent; otherwise Fabric Manager answers `DHCP_SERVER_NOT_CONFIGURED`, `DHCP_NODE_NOT_DECLARED`, or `DHCP_DISABLED` when Kea is off for the whole deployment. `force = true` skips only the Kea reachability probe.
+
+The address data sources fail with `404 IPAM_NOT_CONFIGURED` for a tenant without a pool (which is also what an unknown tenant returns) and `404 SERVER_NOT_FOUND` for a server not in the fabric inventory.
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/11-ipam apply -auto-approve \
+  -state=states/e2e_ipam.tfstate -var="mode=static"
+
+# Read a tenant's pool and one server's addresses
+terraform -chdir=examples/decoupled/11-ipam apply -auto-approve \
+  -state=states/e2e_ipam.tfstate -var="mode=static" \
+  -var="tenant_name=TenantA" -var="server_name=hgx-su00-h00"
+
+# Turn IPAM off
+terraform -chdir=examples/decoupled/11-ipam destroy -auto-approve -state=states/e2e_ipam.tfstate
+```
+
+## 12 - Tenant DHCP
+
+`fabricapi_tenant_dhcp` reads the tenant's DHCP subnet, whether Kea is actually serving it (`live_in_kea`) and every lease. Kea being unreachable isn't an error: `live_in_kea`/`leases` are null and `live_check_error`/`lease_check_error` say why. It fails with `404 DHCP_SUBNET_NOT_FOUND` when DHCP doesn't apply to the tenant.
+
+`fabricapi_dhcp_reconcile` and `fabricapi_tenant_dhcp_retry` re-apply the tenant subnets to Kea and record Fabric Manager's summary. They're action-style: they run on create and whenever `triggers` changes; `destroy` only forgets them. Fabric Manager already reconciles before every tenant create/delete — use these to repair drift in between (e.g. after `live_in_kea` turns false).
+
+### Sample commands
+
+```bash
+# Read only
+terraform -chdir=examples/decoupled/12-dhcp apply -auto-approve \
+  -state=states/e2e_dhcp.tfstate -var="tenant_name=TenantA"
+
+# Reconcile now (change the trigger value to run again)
+terraform -chdir=examples/decoupled/12-dhcp apply -auto-approve \
+  -state=states/e2e_dhcp.tfstate -var="tenant_name=TenantA" -var="reconcile_trigger=$(date +%s)"
+```
+
+## 13 - Rail CIDRPools (lookup)
+
+Read-only. `fabricapi_rail_cidr_pools` returns the rail names and the full multi-document `CIDRPool` manifest for the fabric's East-West rails; `fabricapi_rail_cidr_pool` returns one rail's document. Only SpectrumX fabrics with L3 East-West host links have rails; others fail with `404 RAIL_CIDRPOOL_NOT_FOUND` (or `404 INVALID_RAIL` for a single rail).
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/13-rail-cidrpools apply -auto-approve \
+  -state=states/e2e_rails.tfstate -var="rail_name=r0"
+
+terraform -chdir=examples/decoupled/13-rail-cidrpools output -state=states/e2e_rails.tfstate \
+  -raw manifest > rails-cidrpools.yaml
 ```
 
 ---

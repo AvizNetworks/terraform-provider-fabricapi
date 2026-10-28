@@ -92,6 +92,13 @@ The most copy/paste friendly workflow is under `examples/decoupled/` where each 
 - `examples/decoupled/05-available-servers` — free server lookup (GET `available_servers`)
 - `examples/decoupled/06-vf-interfaces` — HBN VF lookup (GET `vf-interfaces`)
 - `examples/decoupled/07-vf-assign` — HBN VF bind/unbind (POST/DELETE `vf-interfaces/{vfId}/assign`)
+- `examples/decoupled/09-network-policy` — network policy create/extend/delete (`networkpolicy`)
+- `examples/decoupled/10-webhooks` — global, fabric and tenant webhook registrations
+- `examples/decoupled/11-ipam` — IPAM config (static/DHCP) and address lookups
+- `examples/decoupled/12-dhcp` — tenant DHCP subnet/leases, reconcile and retry
+- `examples/decoupled/13-rail-cidrpools` — rail CIDRPool manifests (read-only)
+
+The `09`–`13` roots use Fabric Manager APIs the ONES UI gateway doesn't proxy; see `examples/decoupled/README.md` for the endpoint settings they need.
 
 ### One-time init (per root)
 

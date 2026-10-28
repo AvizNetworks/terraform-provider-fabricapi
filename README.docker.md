@@ -126,6 +126,13 @@ Decoupled roots:
 - `05-available-servers` — free server lookup (GET `available_servers`)
 - `06-vf-interfaces` — HBN VF lookup (GET `vf-interfaces`)
 - `07-vf-assign` — HBN VF bind/unbind (POST/DELETE `vf-interfaces/{vfId}/assign`)
+- `09-network-policy` — network policy create/extend/delete (`networkpolicy`)
+- `10-webhooks` — global, fabric and tenant webhook registrations
+- `11-ipam` — IPAM config (static/DHCP) and address lookups
+- `12-dhcp` — tenant DHCP subnet/leases, reconcile and retry
+- `13-rail-cidrpools` — rail CIDRPool manifests (read-only)
+
+The `09`–`13` roots use Fabric Manager APIs the ONES UI gateway doesn't proxy; see `examples/decoupled/README.md` for the endpoint settings they need.
 
 Initialize each example root once:
 

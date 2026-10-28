@@ -46,4 +46,4 @@ destroy:
 	cd $(WORKDIRECTORY) && terraform destroy -auto-approve
 
 test:
-	echo $(TEST) | xargs -t -n4 go test $(TESTARGS) -count=1 -timeout=30s -parallel=4
+	echo $(TEST) | xargs -t -n4 go test $(TESTARGS) -count=1 -timeout=15m -parallel=4
