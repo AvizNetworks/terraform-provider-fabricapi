@@ -535,6 +535,13 @@ terraform -chdir=examples/decoupled/09-network-policy destroy -auto-approve \
   -var="policy_name=tenantA-to-storage" -var="source_tenant=TenantA" -var="destination_tenant=TenantB"
 ```
 
+To only list the fabric's policies, without creating one, use the read-only `list` folder:
+
+```bash
+terraform -chdir=examples/decoupled/09-network-policy/list init
+terraform -chdir=examples/decoupled/09-network-policy/list apply
+```
+
 ## 10 - Webhooks
 
 Three independent kinds of registration; an event that matches several is delivered to each.
