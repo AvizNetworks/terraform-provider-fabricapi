@@ -53,6 +53,23 @@ or:
 make test
 ```
 
+The unit tests in `internal/provider` include full plan/apply/import/destroy runs against an in-process fake Fabric Manager (`fm_fake_test.go`), so they need a `terraform` binary on `PATH` but no ONES instance. They take about a minute (`make test` allows 15 minutes).
+
+## Acceptance tests (live Fabric Manager)
+
+`internal/provider/fm_acc_test.go` exercises the network policy, webhook, IPAM, DHCP and rail CIDRPool resources against a real ONES 4.4 instance. They only run with `TF_ACC=1`, and create and then destroy their own objects (names start with `tfacc-`). Use a fabric with External tenant control:
+
+```bash
+export FABRIC_API_ENDPOINT="https://<ones-host>:8443"        # Fabric Manager, not the UI gateway
+export FABRIC_API_AUTH_ENDPOINT="https://<ones-host>/api/user"
+export FABRIC_API_USERNAME="..." FABRIC_API_PASSWORD="..."
+export FABRICAPI_INSECURE_TLS=true
+export FABRIC_NAME="<external-tenant-control fabric>"
+TF_ACC=1 go test ./internal/provider/ -run TestAcc -v -timeout 30m
+```
+
+On a fabric that isn't deployed (no tenants, DHCP server or rails) the tests cover the full webhook and IPAM-static lifecycles and Fabric Manager's real error responses for the rest. On a deployed fabric, set `TFACC_TENANT_A`/`TFACC_TENANT_B` (network policy lifecycle), `TFACC_SERVER` (IPAM address lookups), `TFACC_DHCP_TENANT` (DHCP read/retry/reconcile and DHCP-mode IPAM) and `TFACC_RAIL` (rail CIDRPools) to switch on the success paths; see the top of `fm_acc_test.go`.
+
 ## Manual testing with examples (interactive)
 
 The recommended workflow is the decoupled examples:
@@ -65,6 +82,11 @@ The recommended workflow is the decoupled examples:
 - `examples/decoupled/05-available-servers`
 - `examples/decoupled/06-vf-interfaces`
 - `examples/decoupled/07-vf-assign`
+- `examples/decoupled/09-network-policy`
+- `examples/decoupled/10-webhooks`
+- `examples/decoupled/11-ipam`
+- `examples/decoupled/12-dhcp`
+- `examples/decoupled/13-rail-cidrpools`
 
 Set required environment variables for connectivity/auth (see user READMEs), then:
 
