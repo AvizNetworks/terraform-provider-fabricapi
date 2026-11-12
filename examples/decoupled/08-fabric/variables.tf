@@ -107,6 +107,20 @@ variable "deploy" {
   default     = false
 }
 
+variable "redeploy" {
+  description = <<-EOT
+    If true, add fabricapi_fabric_redeploy — re-pushes this fabric's current saved config to
+    recover devices that failed config/operational validation, matching the ONES UI's
+    Re-Deploy button. Unlike fabric_deploy's own redeploy_trigger, this needs only the fabric
+    name: no devices, no custom_yaml, nothing else from this root's other variables. Typically
+    used on its own apply, against a fabric already Deployed in an earlier one (set deploy=false
+    here once it's Deployed, so this root doesn't also try to run the full deploy sequence).
+    To redeploy again: re-apply with -replace="fabricapi_fabric_redeploy.this[0]".
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "deployment_type" {
   description = "One of DEFAULT, PARTIAL_CONFIG, or BROWNFIELD. Only used when var.deploy is true."
   type        = string
