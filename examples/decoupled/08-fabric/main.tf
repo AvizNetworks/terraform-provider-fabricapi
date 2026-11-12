@@ -74,22 +74,6 @@ resource "fabricapi_fabric_deploy" "this" {
   redeploy_allow_unreachable = var.redeploy_allow_unreachable
 }
 
-# Separate from both fabricapi_fabric and fabricapi_fabric_deploy — opt-in via var.redeploy.
-# Unlike fabric_deploy's own redeploy_trigger (which still requires repeating devices/
-# custom_yaml/su_config/network_config every apply since those are its own inputs), this takes
-# only the fabric name: no devices, no custom_yaml. It re-pushes whatever's already stored
-# server-side from the last real deploy, recovering devices that failed validation without a
-# full deploy. Action-style resource (see fabricapi_fabric_redeploy's own docs): to redeploy
-# again, re-apply with -replace="fabricapi_fabric_redeploy.this[0]".
-resource "fabricapi_fabric_redeploy" "this" {
-  count = var.redeploy ? 1 : 0
-
-  fabric_name       = fabricapi_fabric.this.name
-  allow_unreachable = var.redeploy_allow_unreachable
-
-  depends_on = [fabricapi_fabric_deploy.this]
-}
-
 output "fabric_id" {
   value = fabricapi_fabric.this.id
 }
@@ -101,8 +85,4 @@ output "generated_yaml" {
 
 output "fabric_deploy_id" {
   value = var.deploy ? fabricapi_fabric_deploy.this[0].id : null
-}
-
-output "fabric_redeploy_message" {
-  value = var.redeploy ? fabricapi_fabric_redeploy.this[0].message : null
 }
