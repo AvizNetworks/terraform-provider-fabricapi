@@ -60,6 +60,7 @@ The network policy, webhook, IPAM, DHCP and rail CIDRPool APIs (ONES 4.4) are se
   - `11-ipam`: turn IPAM on (static or DHCP) and read pools/addresses
   - `12-dhcp`: read a tenant's DHCP subnet and leases; reconcile/retry DHCP
   - `13-rail-cidrpools`: read the rail CIDRPool manifests (read-only)
+  - `14-fabric-redeploy`: re-push an already-Deployed fabric's saved config (fabric name only)
 
 - **State files**: each root keeps its own state; use one consistent `tenant_name` across those commands for the same tenant, new state filenames for a different tenant, and follow the guides for VPC peering cleanup. See **How state files relate to tenants** in `README.docker.md` or `README.make.md`.
 
