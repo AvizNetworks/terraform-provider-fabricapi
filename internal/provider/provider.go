@@ -205,6 +205,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewIpamConfigResource,
 		NewDhcpReconcileResource,
 		NewTenantDhcpRetryResource,
+		NewTopologyAuditResource,
 	}
 }
 
