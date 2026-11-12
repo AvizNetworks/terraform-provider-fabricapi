@@ -258,12 +258,18 @@ type PushFabricConfigRequest struct {
 	Data       json.RawMessage `json:"data"`
 	FabricName string          `json:"fabricName"`
 	Instance   string          `json:"instance"`
+	// Redeploy matches the ONES UI's Re-Deploy button (RedeployFabricButton.jsx): set
+	// true to have the server refuse the push with a 409 while this fabric's last
+	// deployment is still orchestrating, instead of racing a second push against it.
+	// Omitted (false) for the initial deploy, where no prior orchestration exists yet.
+	Redeploy bool `json:"redeploy,omitempty"`
 }
 
 // PushFabricConfig POSTs {config_endpoint}/api/config. The response body from this endpoint
 // is a plain string/token from the downstream FM engine, not a JSON envelope, so it's
-// returned as-is.
-func (c *APIClient) PushFabricConfig(ctx context.Context, fabricName, instance string, data json.RawMessage) (string, error) {
+// returned as-is. Pass redeploy=true only for a re-push of an already-deployed fabric (see
+// RedeployPrecheck) — it changes server-side concurrency behavior, not the push itself.
+func (c *APIClient) PushFabricConfig(ctx context.Context, fabricName, instance string, data json.RawMessage, redeploy bool) (string, error) {
 	fabricName = strings.TrimSpace(fabricName)
 	if fabricName == "" {
 		return "", fmt.Errorf("fabric name is required")
@@ -273,8 +279,57 @@ func (c *APIClient) PushFabricConfig(ctx context.Context, fabricName, instance s
 		Data:       data,
 		FabricName: fabricName,
 		Instance:   instance,
+		Redeploy:   redeploy,
 	}
 	return c.configRequestString(ctx, http.MethodPost, "/api/config", reqBody)
+}
+
+// RedeployPrecheckDevice is one device's result from POST {config_endpoint}/api/config/redeployprecheck.
+type RedeployPrecheckDevice struct {
+	Hostname string `json:"hostname"`
+	IP       string `json:"ip"`
+	Role     string `json:"role"`
+	OK       bool   `json:"ok"`
+	// Reason is one of "missing-credentials", "auth", or "unreachable" when OK is false.
+	// Only "unreachable" is safe to proceed past — "auth"/"missing-credentials" mean the
+	// fabric's stored credentials themselves are wrong, which a redeploy can't fix.
+	Reason string `json:"reason,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
+type redeployPrecheckResponse struct {
+	OK      bool                     `json:"ok"`
+	Devices []RedeployPrecheckDevice `json:"devices"`
+}
+
+// RedeployPrecheck POSTs {config_endpoint}/api/config/redeployprecheck, matching the ONES
+// UI's Re-Deploy button's own pre-check (RedeployFabricButton.jsx): SSHes into every device
+// in the fabric's last saved YAML using its already-stored credentials (not caller-supplied
+// ones — unlike ValidateSwitches/ValidateServers, this never uploads new credentials). Used
+// before a redeploy push to confirm every device is still reachable and still accepts its
+// stored login, without re-running the full validate/uploadip sequence.
+func (c *APIClient) RedeployPrecheck(ctx context.Context, fabricName string) ([]RedeployPrecheckDevice, error) {
+	fabricName = strings.TrimSpace(fabricName)
+	if fabricName == "" {
+		return nil, fmt.Errorf("fabric name is required")
+	}
+
+	respBody, status, err := c.doConfigRequest(ctx, http.MethodPost, "/api/config/redeployprecheck", map[string]string{"fabricName": fabricName})
+	if err != nil {
+		return nil, err
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		bodyStr := apiErrorBody(respBody)
+		if bodyStr == "" {
+			return nil, fmt.Errorf("API returned %d", status)
+		}
+		return nil, fmt.Errorf("API returned %d: %s", status, bodyStr)
+	}
+	var parsed redeployPrecheckResponse
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
+		return nil, fmt.Errorf("unable to parse redeploy precheck response: %w", err)
+	}
+	return parsed.Devices, nil
 }
 
 // UpdateFabricStatusRequest matches POST {config_endpoint}/api/config/updatefabricstatus —

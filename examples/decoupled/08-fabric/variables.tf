@@ -161,3 +161,26 @@ variable "custom_yaml_path" {
   default = ""
 }
 
+variable "redeploy_trigger" {
+  description = <<-EOT
+    Change this (e.g. -var="redeploy_trigger=$(date +%s)") and re-apply to re-push this
+    fabric's current config without a full replace — matches the ONES UI's Re-Deploy button.
+    Only used when var.deploy is true. Leave unset (default) for the ordinary flow; set it to
+    recover devices that failed config/operational validation after a prior deploy. To deploy
+    different devices or a different custom_yaml, change those instead (still a full replace).
+  EOT
+  type    = string
+  default = ""
+}
+
+variable "redeploy_allow_unreachable" {
+  description = <<-EOT
+    When redeploying (see redeploy_trigger), proceed even if the precheck finds devices that
+    are unreachable (but not an outright login/credential failure) — matches the UI's
+    "Re-Deploy Anyway". Those specific devices will fail again; others may still succeed.
+    Never bypasses a real credential failure. Defaults to false.
+  EOT
+  type    = bool
+  default = false
+}
+
