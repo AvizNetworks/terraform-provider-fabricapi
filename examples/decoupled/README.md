@@ -51,6 +51,7 @@ Each root keeps **its own** state file. Reuse the same `-state=...` path when co
 | `11-ipam` | `states/e2e_ipam.tfstate` | Resource — destroy turns IPAM off |
 | `12-dhcp` | `states/e2e_dhcp.tfstate` | Data source + action resources — destroy is state-only |
 | `13-rail-cidrpools` | `states/e2e_rails.tfstate` | **Data sources only** — refreshed each apply; no destroy needed |
+| `14-topology-audit` | `states/e2e_topology_audit.tfstate` | Action resource — destroy is state-only |
 
 Use a **new state filename** when starting a different tenant or a clean run.
 
@@ -78,6 +79,7 @@ mkdir -p examples/decoupled/10-webhooks/states
 mkdir -p examples/decoupled/11-ipam/states
 mkdir -p examples/decoupled/12-dhcp/states
 mkdir -p examples/decoupled/13-rail-cidrpools/states
+mkdir -p examples/decoupled/14-topology-audit/states
 mkdir -p examples/decoupled/08-fabric/states
 
 rm -f examples/decoupled/01-tenant/.terraform.lock.hcl
@@ -479,9 +481,9 @@ terraform -chdir=examples/decoupled/08-fabric destroy -auto-approve \
 
 ---
 
-## Fabric Manager 4.4 APIs (09–13)
+## Fabric Manager 4.4 APIs (09–14)
 
-Network policy, webhook registration, IPAM, tenant DHCP and rail CIDRPools are served by Fabric Manager itself. The ONES UI gateway (`https://<ones-host>/api/fm/...`) doesn't proxy them — it answers with the UI's HTML page, which the provider reports as an error — so point the provider at Fabric Manager on port 8443 and log in through ONES:
+Network policy, webhook registration, IPAM, tenant DHCP, rail CIDRPools, and the on-demand topology audit are served by Fabric Manager itself. The ONES UI gateway (`https://<ones-host>/api/fm/...`) doesn't proxy them — it answers with the UI's HTML page, which the provider reports as an error — so point the provider at Fabric Manager on port 8443 and log in through ONES:
 
 ```bash
 export FABRIC_API_ENDPOINT="https://<ones-host>:8443"
@@ -492,7 +494,7 @@ export FABRICAPI_INSECURE_TLS=1
 export FABRIC_NAME="my_fabric"
 ```
 
-All of these calls are synchronous (no `prefer`/operation polling). Network policy and IPAM config only work on fabrics created with **External** tenant control (`su_config.tenant_control = "external"` in `08-fabric`); DHCP additionally needs a VXLAN fabric with a Kea server. Fabric Manager answers `409 FABRIC_NOT_EXTERNALLY_MANAGED` otherwise.
+All of these calls are synchronous (no `prefer`/operation polling) **except `14-topology-audit`**, which Fabric Manager always answers `202` for and the provider polls `GET /operations/{id}` to completion internally — there is no sync form of that one endpoint, unlike everywhere else in this provider. Network policy and IPAM config only work on fabrics created with **External** tenant control (`su_config.tenant_control = "external"` in `08-fabric`); DHCP additionally needs a VXLAN fabric with a Kea server. Fabric Manager answers `409 FABRIC_NOT_EXTERNALLY_MANAGED` otherwise.
 
 | Root | Terraform types | Needs |
 |------|-----------------|-------|
@@ -501,6 +503,7 @@ All of these calls are synchronous (no `prefer`/operation polling). Network poli
 | `11-ipam` | `fabricapi_ipam_config`, data `fabricapi_ipam_config`, `fabricapi_tenant_ip_addresses`, `fabricapi_server_ip_addresses`, `fabricapi_tenant_compute_ip` | External fabric; address lookups need tenants with allotted servers |
 | `12-dhcp` | data `fabricapi_tenant_dhcp`, `fabricapi_dhcp_reconcile`, `fabricapi_tenant_dhcp_retry` | IPAM in DHCP mode, Kea server |
 | `13-rail-cidrpools` | data `fabricapi_rail_cidr_pools`, `fabricapi_rail_cidr_pool` | SpectrumX fabric with L3 East-West rails |
+| `14-topology-audit` | `fabricapi_topology_audit` | A fabric with intent (YAML) on file in Fabric Manager |
 
 ## 09 - Network policy
 
@@ -626,6 +629,33 @@ terraform -chdir=examples/decoupled/13-rail-cidrpools apply -auto-approve \
 
 terraform -chdir=examples/decoupled/13-rail-cidrpools output -state=states/e2e_rails.tfstate \
   -raw manifest > rails-cidrpools.yaml
+```
+
+## 14 - Topology Audit (on-demand)
+
+`fabricapi_topology_audit` triggers an on-demand LLDP-vs-intent cabling validation for a fabric — the same audit the Rule Engine runs on a schedule, run immediately instead of waiting for the next interval. It kicks off `POST /fabrics/{fabric}/topology-audit` (always `202`), polls `GET /operations/{id}` to completion, and records the outcome.
+
+- `overall_status` is `PASS`, `FAIL`, or `INCOMPLETE` (any link unverifiable, e.g. an unreachable device) — a non-`PASS` outcome succeeds the apply with a warning by default; set `fail_on_non_pass = true` to hard-fail instead.
+- `discrepancies` is the JSON-encoded per-link detail (`device`, `localInterface`, `remoteDevice`, `remoteInterface`, `observedRemoteDevice`, `observedRemoteInterface`, `status`, `message`), or the job's error message when `job_status` is `FAILED` (a job failure — e.g. the fabric has no intent on file — is always a hard error, regardless of `fail_on_non_pass`).
+- Action-style resource: it runs on create and whenever `triggers` changes; refresh/plan never re-triggers it, and `destroy` only removes it from state (an audit is read-only — there's nothing remote to undo).
+
+### Sample commands
+
+```bash
+terraform -chdir=examples/decoupled/14-topology-audit apply -auto-approve \
+  -state=states/e2e_topology_audit.tfstate \
+  -var="fabric_name=my_fabric" \
+  -var="run_trigger=$(date +%s)"
+
+terraform -chdir=examples/decoupled/14-topology-audit output -state=states/e2e_topology_audit.tfstate \
+  overall_status
+
+# Hard-fail the apply itself on FAIL/INCOMPLETE instead of warning
+terraform -chdir=examples/decoupled/14-topology-audit apply -auto-approve \
+  -state=states/e2e_topology_audit.tfstate \
+  -var="fabric_name=my_fabric" \
+  -var="run_trigger=$(date +%s)" \
+  -var="fail_on_non_pass=true"
 ```
 
 ---

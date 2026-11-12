@@ -46,6 +46,40 @@ type fakeFM struct {
 	// Paged data for the data source tests.
 	tenantIPs map[string][]IpamAllocation // fabric/tenant -> allocations
 	leases    map[string][]DhcpLease      // fabric/tenant -> leases
+
+	// Topology audit: fabric -> the response script the *next* POST
+	// .../topology-audit on that fabric should play back over successive
+	// GET /operations/{id} polls. operations holds the scripts actually
+	// handed out, keyed by the generated operation id, so polling looks
+	// them up independently of the fabric.
+	topologyAuditScripts map[string][]fakeOperationResponse
+	operations           map[string]*fakeOperationState
+	nextOperationID      int64
+}
+
+// fakeOperationResponse is one GET /operations/{id} body in a script. The
+// last entry repeats once a script is exhausted, so a 1-entry script (the
+// default) just answers the same terminal status on every poll.
+type fakeOperationResponse struct {
+	Status       string // PENDING, RUNNING, SUCCESS, FAILED
+	Result       string // raw JSON string, mirrors OperationStatus.result
+	ErrorMessage string
+}
+
+type fakeOperationState struct {
+	fabric    string
+	responses []fakeOperationResponse
+	polls     int
+}
+
+// queueTopologyAudit sets the response script the next POST
+// /fabrics/{fabric}/topology-audit will play back. Call before the
+// Terraform apply that triggers it. If never called for a fabric, the fake
+// answers a single, immediate PASS with no links.
+func (f *fakeFM) queueTopologyAudit(fabric string, responses ...fakeOperationResponse) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.topologyAuditScripts[fabric] = responses
 }
 
 type fakeRequest struct {
@@ -64,15 +98,17 @@ type fakeResponse struct {
 
 func newFakeFM(t *testing.T) *fakeFM {
 	f := &fakeFM{
-		t:         t,
-		fabrics:   map[string]bool{"fab1": true},
-		policies:  map[string][]NetworkPolicy{},
-		global:    map[string]*WebhookRegistration{},
-		scoped:    map[string]*WebhookRegistration{},
-		ipam:      map[string]IpamConfig{},
-		overrides: map[string]fakeResponse{},
-		tenantIPs: map[string][]IpamAllocation{},
-		leases:    map[string][]DhcpLease{},
+		t:                    t,
+		fabrics:              map[string]bool{"fab1": true},
+		policies:             map[string][]NetworkPolicy{},
+		global:               map[string]*WebhookRegistration{},
+		scoped:               map[string]*WebhookRegistration{},
+		ipam:                 map[string]IpamConfig{},
+		overrides:            map[string]fakeResponse{},
+		tenantIPs:            map[string][]IpamAllocation{},
+		leases:               map[string][]DhcpLease{},
+		topologyAuditScripts: map[string][]fakeOperationResponse{},
+		operations:           map[string]*fakeOperationState{},
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.srv.Close)
@@ -170,6 +206,10 @@ func (f *fakeFM) serve(w http.ResponseWriter, r *http.Request) {
 		f.serveTenantIPs(w, r, parts[1], parts[3])
 	case len(parts) == 5 && parts[0] == "fabrics" && parts[2] == "tenants" && parts[4] == "dhcp":
 		f.serveTenantDhcp(w, r, parts[1], parts[3])
+	case len(parts) == 3 && parts[0] == "fabrics" && parts[2] == "topology-audit":
+		f.serveTopologyAudit(w, r, parts[1])
+	case len(parts) == 2 && parts[0] == "operations":
+		f.serveOperation(w, r, parts[1])
 	default:
 		writeJSON(w, http.StatusNotFound, envelopeErr("NOT_FOUND", "no fake route for "+r.Method+" "+r.URL.Path))
 	}
@@ -539,6 +579,69 @@ func (f *fakeFM) serveTenantIPs(w http.ResponseWriter, r *http.Request, fabric, 
 		"allocations": append([]IpamAllocation{}, all[start:end]...),
 		"pagination":  map[string]any{"page": page, "size": size, "totalElements": len(all), "totalPages": pages},
 	}))
+}
+
+// ------------------------------------------------------------- topology audit
+
+// serveTopologyAudit mirrors TopologyAuditController.startAudit: 404
+// INVALID_FABRIC for an unknown fabric, else 202 + {operationId, status}
+// with an Operation-Location header, same as the real controller.
+func (f *fakeFM) serveTopologyAudit(w http.ResponseWriter, r *http.Request, fabric string) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, envelopeErr("METHOD", r.Method))
+		return
+	}
+	if !f.fabrics[fabric] {
+		writeJSON(w, http.StatusNotFound, envelopeErr("INVALID_FABRIC", fmt.Sprintf("No fabric or intent found for '%s'.", fabric)))
+		return
+	}
+
+	responses := f.topologyAuditScripts[fabric]
+	if len(responses) == 0 {
+		responses = []fakeOperationResponse{{
+			Status: "SUCCESS",
+			Result: fmt.Sprintf(`{"fabricName":%q,"intentVersion":"1:test","overallStatus":"PASS","links":[],"deviceIpMap":{}}`, fabric),
+		}}
+	}
+
+	f.nextOperationID++
+	operationID := fmt.Sprintf("topoaudit-%s-%d", fabric, f.nextOperationID)
+	f.operations[operationID] = &fakeOperationState{fabric: fabric, responses: responses}
+
+	w.Header().Set("Operation-Location", "/operations/"+operationID)
+	writeJSON(w, http.StatusAccepted, envelopeOK(map[string]any{"operationId": operationID, "status": "PENDING"}))
+}
+
+// serveOperation mirrors the generic GET /operations/{id}: plays back the
+// next entry in the operation's response script (the last entry repeats
+// once exhausted), shaped like the raw OperationStatus JPA entity.
+func (f *fakeFM) serveOperation(w http.ResponseWriter, r *http.Request, operationID string) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, envelopeErr("METHOD", r.Method))
+		return
+	}
+	op, ok := f.operations[operationID]
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	idx := op.polls
+	if idx >= len(op.responses) {
+		idx = len(op.responses) - 1
+	}
+	resp := op.responses[idx]
+	op.polls++
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":           operationID,
+		"type":         "TOPOLOGY_AUDIT",
+		"status":       resp.Status,
+		"errorMessage": resp.ErrorMessage,
+		"fabricName":   op.fabric,
+		"result":       resp.Result,
+		"createdAt":    "2026-11-12T10:00:00Z",
+		"completedAt":  "2026-11-12T10:00:05Z",
+	})
 }
 
 func (f *fakeFM) serveTenantDhcp(w http.ResponseWriter, r *http.Request, fabric, tenant string) {

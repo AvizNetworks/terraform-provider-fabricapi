@@ -682,6 +682,120 @@ func (c *APIClient) WaitForOperationDone(ctx context.Context, operationID string
 	}
 }
 
+// operationDetail is the full OperationStatus row Fabric Manager's generic
+// GET /operations/{id} returns. Unlike operationStatus (which only looks at
+// status/done/message for the plain submit-and-wait resources), this also
+// keeps errorMessage and the raw `result` JSON string - needed by resources
+// like fabricapi_topology_audit whose actual outcome lives inside `result`,
+// not in `status` (status only ever reaches SUCCESS/FAILED at the job-exec
+// level; a FAILED *audit* like a MISSING_LINK is still job status SUCCESS).
+type operationDetail struct {
+	ID           string
+	Type         string
+	Status       string
+	ErrorMessage string
+	FabricName   string
+	Result       string
+	CreatedAt    string
+	CompletedAt  string
+}
+
+func parseOperationDetail(respBody []byte) operationDetail {
+	var m map[string]any
+	if err := json.Unmarshal(respBody, &m); err != nil {
+		return operationDetail{}
+	}
+	getStr := func(key string) string {
+		if v, ok := m[key]; ok {
+			if ss, ok := v.(string); ok {
+				return strings.TrimSpace(ss)
+			}
+		}
+		return ""
+	}
+	// createdAt/completedAt are java.time.Instant fields; depending on Jackson
+	// config they may serialize as an ISO-8601 string or an epoch
+	// number/array. Render whatever is there rather than assuming a shape.
+	getTimestamp := func(key string) string {
+		v, ok := m[key]
+		if !ok || v == nil {
+			return ""
+		}
+		if ss, ok := v.(string); ok {
+			return strings.TrimSpace(ss)
+		}
+		b, err := json.Marshal(v)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+	return operationDetail{
+		ID:           getStr("id"),
+		Type:         getStr("type"),
+		Status:       getStr("status"),
+		ErrorMessage: getStr("errorMessage"),
+		FabricName:   getStr("fabricName"),
+		Result:       getStr("result"),
+		CreatedAt:    getTimestamp("createdAt"),
+		CompletedAt:  getTimestamp("completedAt"),
+	}
+}
+
+// GetOperationDetail fetches the full operation row (see operationDetail).
+func (c *APIClient) GetOperationDetail(ctx context.Context, operationID string) (operationDetail, error) {
+	u := fmt.Sprintf("%s/operations/%s", strings.TrimRight(c.Endpoint, "/"), url.PathEscape(operationID))
+	body, status, err := c.doRequestRaw(ctx, http.MethodGet, u, nil, 60*time.Minute)
+	if err != nil {
+		return operationDetail{}, err
+	}
+	if status < 200 || status >= 300 {
+		return operationDetail{}, fmt.Errorf("operation status returned %d: %s", status, strings.TrimSpace(string(body)))
+	}
+	return parseOperationDetail(body), nil
+}
+
+// isOperationStatusTerminal reports whether a job-execution status (as
+// opposed to a domain-level outcome inside `result`) is final.
+func isOperationStatusTerminal(status string) bool {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "SUCCESS", "FAILED", "CANCELLED", "DONE", "COMPLETED", "ERROR", "SUCCEEDED":
+		return true
+	default:
+		return false
+	}
+}
+
+// PollOperationUntilTerminal polls GET /operations/{id} until the job itself
+// reaches a terminal execution status (SUCCESS/FAILED/CANCELLED), returning
+// the full detail either way. Unlike WaitForOperationDone, it never turns a
+// terminal FAILED status into a Go error - callers that need the distinct
+// job-failed-vs-succeeded-with-a-bad-outcome split (e.g. a FAILED audit
+// finding vs. a FAILED job execution) decide that themselves from the
+// returned detail.
+func (c *APIClient) PollOperationUntilTerminal(ctx context.Context, operationID string, timeout time.Duration) (operationDetail, error) {
+	if strings.TrimSpace(operationID) == "" {
+		return operationDetail{}, fmt.Errorf("missing operation id")
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if err := ctx.Err(); err != nil {
+			return operationDetail{}, err
+		}
+		if time.Now().After(deadline) {
+			return operationDetail{}, fmt.Errorf("timeout waiting for operation %s", operationID)
+		}
+		d, err := c.GetOperationDetail(ctx, operationID)
+		if err != nil {
+			return operationDetail{}, err
+		}
+		if isOperationStatusTerminal(d.Status) {
+			return d, nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+}
+
 type TenantRequest struct {
 	TenantName     string
 	Description    string
@@ -1517,16 +1631,16 @@ func (c *APIClient) GetAvailableServers(ctx context.Context, fabricName string) 
 
 // VfInterfacesResponse matches GET /fabrics/{fabric}/servers/{server}/vf-interfaces.
 type VfInterfacesResponse struct {
-	ServerName string        `json:"serverName"`
-	FabricName string        `json:"fabricName"`
-	DpuCount   int           `json:"dpuCount"`
-	Dpus       []VfDpuEntry  `json:"dpus"`
+	ServerName string       `json:"serverName"`
+	FabricName string       `json:"fabricName"`
+	DpuCount   int          `json:"dpuCount"`
+	Dpus       []VfDpuEntry `json:"dpus"`
 }
 
 // VfDpuEntry is one DPU and its VF interfaces on a GPU server.
 type VfDpuEntry struct {
-	DpuName      string         `json:"dpuName"`
-	VfInterfaces []VfInterface  `json:"vfInterfaces"`
+	DpuName      string        `json:"dpuName"`
+	VfInterfaces []VfInterface `json:"vfInterfaces"`
 }
 
 // VfInterface is a single VF row (DPU if_name and/or host server_if).
