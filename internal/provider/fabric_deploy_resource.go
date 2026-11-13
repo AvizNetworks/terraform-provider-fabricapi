@@ -187,7 +187,7 @@ func (r *FabricDeployResource) Schema(ctx context.Context, req resource.SchemaRe
 				},
 			},
 			"redeploy_trigger": schema.StringAttribute{
-				MarkdownDescription: "Set/change this (e.g. to a timestamp or build id) to re-push this fabric's current config without recreating the resource — matching the ONES UI's Re-Deploy button. Unlike every other attribute here, this does NOT force replacement: changing only this (and/or `redeploy_allow_unreachable`) runs a lightweight redeploy instead of the full uploadip/validateswitch/validateserver/updateinventory/updatefabricstatus sequence. It re-pushes exactly the `devices`/`custom_yaml` already in state — to deploy different devices or a different YAML, change those instead, which still forces a full redeploy via replacement. Before pushing, every device in the fabric's last saved YAML is SSH-checked with its already-stored credentials (POST .../redeployprecheck); a device whose login has changed (not merely unreachable) always blocks the redeploy, matching the UI, since this path never uploads new credentials.",
+				MarkdownDescription: "Set/change this (e.g. to a timestamp or build id) to re-push this fabric's current config without recreating the resource — matching the ONES UI's Re-Deploy button. Unlike every other attribute here, this does NOT force replacement: changing only this (and/or `redeploy_allow_unreachable`) runs a lightweight redeploy instead of the full uploadip/validateswitch/validateserver/updateinventory/updatefabricstatus sequence. Like `fabricapi_fabric_redeploy`, it re-fetches and re-pushes whatever is currently saved server-side as-is — never the `devices`/`custom_yaml` from Terraform state, which may be stale relative to corrections made directly against the server; to deploy different devices or a different YAML, change those instead, which still forces a full redeploy via replacement. Before pushing, every device in the fabric's last saved YAML is SSH-checked with its already-stored credentials (POST .../redeployprecheck); a device whose login has changed (not merely unreachable) always blocks the redeploy, matching the UI, since this path never uploads new credentials.",
 				Optional:            true,
 			},
 			"redeploy_allow_unreachable": schema.BoolAttribute{
@@ -591,8 +591,9 @@ func (r *FabricDeployResource) Read(ctx context.Context, req resource.ReadReques
 // Update only runs when redeploy_trigger and/or redeploy_allow_unreachable are the sole
 // changes — every other attribute has RequiresReplace, so the framework would have planned a
 // full replace (Delete+Create) instead if fabric_name/devices/custom_yaml/etc. had changed.
-// That means data here already carries the same fabric_name/instance/devices/custom_yaml as
-// current state; this only needs to redeploy with them, not re-derive anything.
+// Like fabricapi_fabric_redeploy, this re-pushes whatever YAML is currently saved server-side
+// as-is — it never re-injects devices/custom_yaml from Terraform state, since those may be
+// stale relative to corrections made directly against the server.
 func (r *FabricDeployResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data FabricDeployResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -606,30 +607,6 @@ func (r *FabricDeployResource) Update(ctx context.Context, req resource.UpdateRe
 	}
 	fabricName := data.FabricName.ValueString()
 	allowUnreachable := !data.RedeployAllowUnreachable.IsNull() && !data.RedeployAllowUnreachable.IsUnknown() && data.RedeployAllowUnreachable.ValueBool()
-
-	var deviceModels []FabricDeployDeviceModel
-	if !data.Devices.IsNull() && !data.Devices.IsUnknown() {
-		resp.Diagnostics.Append(data.Devices.ElementsAs(ctx, &deviceModels, false)...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
-	}
-	devices := make([]FabricDeviceInput, 0, len(deviceModels))
-	for _, dm := range deviceModels {
-		applyConfig := true
-		if !dm.ApplyConfig.IsNull() && !dm.ApplyConfig.IsUnknown() {
-			applyConfig = dm.ApplyConfig.ValueBool()
-		}
-		devices = append(devices, FabricDeviceInput{
-			Hostname:    dm.Hostname.ValueString(),
-			IP:          dm.IP.ValueString(),
-			Username:    dm.Username.ValueString(),
-			Password:    dm.Password.ValueString(),
-			DeviceType:  dm.DeviceType.ValueString(),
-			DeviceRole:  dm.DeviceRole.ValueString(),
-			ApplyConfig: applyConfig,
-		})
-	}
 
 	// Pre-check: SSH into every device in the fabric's last saved YAML with its already-
 	// stored credentials (not `devices` above — the server reads its own saved copy).
@@ -672,28 +649,23 @@ func (r *FabricDeployResource) Update(ctx context.Context, req resource.UpdateRe
 		)
 	}
 
-	// Same YAML-selection/credential-injection logic as Create step 5, with the same
-	// devices/custom_yaml already in state (neither can have changed — both force replace).
-	var rawYAML string
-	if !data.CustomYaml.IsNull() && !data.CustomYaml.IsUnknown() && strings.TrimSpace(data.CustomYaml.ValueString()) != "" {
-		rawYAML = data.CustomYaml.ValueString()
-	} else {
-		fetched, err := r.client.GetFabricYaml(ctx, fabricName)
-		if err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to fetch generated fabric YAML for %q: %s", fabricName, err))
-			return
-		}
-		rawYAML = fetched
+	// Re-push the fabric's current saved YAML as-is, matching fabricapi_fabric_redeploy —
+	// never re-inject devices/custom_yaml from Terraform state, which may be stale relative
+	// to corrections made directly against the server (the precheck above already validated
+	// against the server's own stored credentials, not these).
+	rawYAML, err := r.client.GetFabricYaml(ctx, fabricName)
+	if err != nil {
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to fetch saved fabric YAML for %q: %s", fabricName, err))
+		return
 	}
 	var doc yaml.Node
 	if err := yaml.Unmarshal([]byte(rawYAML), &doc); err != nil {
-		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to parse generated fabric YAML for %q: %s", fabricName, err))
+		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to parse saved fabric YAML for %q: %s", fabricName, err))
 		return
 	}
-	injectDeviceCredentials(&doc, devices)
 	orderedJSON, err := yamlNodeToOrderedJSON(&doc)
 	if err != nil {
-		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to convert generated fabric YAML for %q to JSON: %s", fabricName, err))
+		resp.Diagnostics.AddError("YAML Parse Error", fmt.Sprintf("Unable to convert saved fabric YAML for %q to JSON: %s", fabricName, err))
 		return
 	}
 
@@ -706,6 +678,7 @@ func (r *FabricDeployResource) Update(ctx context.Context, req resource.UpdateRe
 		resp.Diagnostics.AddWarning("Fabric redeployed", pushResp)
 	}
 
+	data.ID = types.StringValue(fabricName)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
