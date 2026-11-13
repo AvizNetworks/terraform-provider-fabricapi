@@ -197,6 +197,7 @@ func (p *FabricAPIProvider) Resources(ctx context.Context) []func() resource.Res
 		NewAuthLogoutResource,
 		NewFabricResource,
 		NewFabricDeployResource,
+		NewFabricRedeployResource,
 		NewInventorySyncResource,
 		NewNetworkPolicyResource,
 		NewWebhookResource,

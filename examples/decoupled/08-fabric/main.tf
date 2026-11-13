@@ -67,6 +67,11 @@ resource "fabricapi_fabric_deploy" "this" {
   deployment_type = var.deployment_type
   devices         = local.devices_effective
   custom_yaml     = local.custom_yaml_effective != "" ? local.custom_yaml_effective : null
+
+  # Change var.redeploy_trigger (e.g. -var="redeploy_trigger=$(date +%s)") and re-apply to
+  # recover failed devices without a full replace — see variables.tf.
+  redeploy_trigger           = var.redeploy_trigger != "" ? var.redeploy_trigger : null
+  redeploy_allow_unreachable = var.redeploy_allow_unreachable
 }
 
 output "fabric_id" {
