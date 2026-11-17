@@ -26,6 +26,7 @@ network_config = {
   # su_config.tenant_control = "external", starting_subnet_tenants is also required.
   # enable_north_south_networking = true
   # ns_operating_system           = "cumulus" # or "sonic" — must match the real devices' OS
+  # ns_bgp_mode                   = "numbered" # default; "unnumbered" sets BGP_U: true in the YAML (fabric-wide)
   # starting_subnet_cpu           = "10.2"    # required when enable_north_south_networking is true
   # dedicated_storage             = true      # optional; requires starting_subnet_storage
   # starting_subnet_storage       = "10.3"
