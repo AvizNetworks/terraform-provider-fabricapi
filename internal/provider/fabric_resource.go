@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -18,7 +19,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-var _ resource.Resource = &FabricResource{}
+var (
+	_ resource.Resource                   = &FabricResource{}
+	_ resource.ResourceWithValidateConfig = &FabricResource{}
+)
 
 func NewFabricResource() resource.Resource {
 	return &FabricResource{}
@@ -345,6 +349,33 @@ func (r *FabricResource) Configure(ctx context.Context, req resource.ConfigureRe
 		return
 	}
 	r.client = client
+}
+
+// ValidateConfig rejects ns_bgp_mode = "unnumbered" without N-S networking at
+// plan time. Changing network_config replaces the fabric (delete, then
+// create), so a check that only ran in Create would delete the existing fabric
+// before failing. validate() in Create keeps the same check as a safeguard.
+// Values not yet known at plan time are skipped.
+func (r *FabricResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var networkConfig types.Object
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("network_config"), &networkConfig)...)
+	if resp.Diagnostics.HasError() || networkConfig.IsNull() || networkConfig.IsUnknown() {
+		return
+	}
+	attrs := networkConfig.Attributes()
+	mode, _ := attrs["ns_bgp_mode"].(types.String)
+	enableNS, _ := attrs["enable_north_south_networking"].(types.Bool)
+	if mode.IsNull() || mode.IsUnknown() || mode.ValueString() != nsBgpModeUnnumbered || enableNS.IsUnknown() {
+		return
+	}
+	// enable_north_south_networking defaults to false when unset.
+	if !enableNS.ValueBool() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("network_config").AtName("ns_bgp_mode"),
+			"BGP unnumbered requires N-S networking",
+			"network_config.ns_bgp_mode is \"unnumbered\" but enable_north_south_networking is false. Enable N-S networking or remove ns_bgp_mode.",
+		)
+	}
 }
 
 func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
