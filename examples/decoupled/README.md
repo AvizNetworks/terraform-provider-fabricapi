@@ -397,6 +397,26 @@ Notes:
 - `host_map` is optional — the API needs both `hostMap` and `suHostCnt` carrying the same SU-index→host-count data, so the provider derives `host_map` from `hosts_per_su` automatically (e.g. `hosts_per_su = "{0:1}"` → `host_map = {"0" = "1"}`) when `host_map` is left unset. Set it explicitly only if it needs to differ.
 - **North-South networking**: set `enable_ns = true` to enable the ONES UI's "N-S (Front-End) Network" section, matching `enable_ew`/`starting_subnet_gpu` for east-west. `starting_subnet_cpu` is then **required** — it's used as the shared user/storage subnet by default. Set `dedicated_storage = true` (+ `starting_subnet_storage`, required together) to split storage onto its own subnet instead — mirrors the ONES UI's single "Dedicated Storage Network" switch, which is why there's no separate `frontend_storage` knob (the provider derives it from `dedicated_storage` internally; an earlier version exposed it separately, which suppressed the storage-leaf nodes — see `internal/provider/fabric_resource.go` for why). All off by default (east-west only, the prior behavior).
 - Tenant control: `su_config.tenant_control` is the ONES UI's "Tenant control" radio — `"ones"` (default, `isOnesControlled = true`) or `"external"` (`false`). It is **not** the same thing as `tenant_ctrl`, a separate, always-`"ones"` API field. With `"external"` and N-S enabled, `network_config.starting_subnet_tenants` (the "Tenant Compute IP Pool" first octet, sent as `X.0`) is required.
+- N-S BGP mode: `network_config.ns_bgp_mode` is `"numbered"` (default when unset; the existing behavior) or `"unnumbered"`, which makes ONES set `BGP_U: true` in the generated fabric YAML. `"unnumbered"` requires `enable_north_south_networking = true`, and needs an ONES build whose `addFabricData` accepts `nsBgpMode` (older builds ignore it and keep `BGP_U: false`). `BGP_U` is a single fabric-wide setting in ONES, so it also applies to E-W BGP. Changing it replaces the fabric, like every other `network_config` input. Examples:
+
+  ```hcl
+  # Numbered (default) — same as leaving ns_bgp_mode out
+  network_config = {
+    enable_east_west_networking   = true
+    starting_subnet_gpu           = "192"
+    enable_north_south_networking = true
+    starting_subnet_cpu           = "10.2"
+  }
+
+  # Unnumbered — generated YAML has BGP_U: true
+  network_config = {
+    enable_east_west_networking   = true
+    starting_subnet_gpu           = "192"
+    enable_north_south_networking = true
+    starting_subnet_cpu           = "10.2"
+    ns_bgp_mode                   = "unnumbered"
+  }
+  ```
 - E-W technology: `network_config.network_type` is `"ethernet"` (default) or `"infiniband"` (gb200 defaults to and only allows InfiniBand; SpX RA 2.1 only allows Ethernet). InfiniBand takes no `starting_subnet_gpu`. The provider derives `gpuScaleMode` from this and `node_type` the same way the UI does.
 - There is no known GET endpoint reporting `fabricapi_fabric`'s own state, so its Read is a best-effort no-op. Same for `fabricapi_fabric_deploy`.
 - `terraform destroy` on `fabricapi_fabric` always calls the delete API (unconditional, like `fabricapi_tenant`). `fabricapi_fabric_deploy` has no known "undeploy" API, so its destroy only removes it from Terraform state — the fabric stays Deployed in ONES.

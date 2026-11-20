@@ -66,6 +66,12 @@ variable "network_config" {
       - ns_operating_system: "cumulus" (default) or "sonic" for the north-south switches,
         matching the ONES UI's OS selector in that section. Must match the real devices'
         actual OS or switch validation fails during deploy. East-west is always Cumulus.
+      - ns_bgp_mode: north-south BGP peering mode, "numbered" (default when unset; the existing
+        behavior) or "unnumbered". "unnumbered" makes ONES set BGP_U: true in the generated
+        fabric YAML and requires enable_north_south_networking = true. BGP_U is fabric-wide in
+        ONES, so it also applies to E-W BGP. Needs an ONES build with nsBgpMode support.
+        Left null rather than defaulted to "numbered" here so fabrics created before this
+        option existed don't plan a replace.
       - dedicated_storage / starting_subnet_storage: optional pair (required together) that
         splits storage NICs onto their own subnet instead of sharing the CPU one — the ONES
         UI's "Dedicated Storage Network" switch.
@@ -92,13 +98,24 @@ variable "network_config" {
     starting_subnet_tenants       = optional(string)
     enable_north_south_networking = optional(bool, false)
     ns_operating_system           = optional(string)
-    dedicated_storage             = optional(bool, false)
+    ns_bgp_mode                   = optional(string)
+    dedicated_storage            = optional(bool, false)
     starting_subnet_cpu           = optional(string)
     starting_subnet_storage       = optional(string)
     dpu_hbn                       = optional(bool, false)
     is_vxlan_fabric               = optional(bool)
     storage_tenant_aware          = optional(bool)
   })
+
+  validation {
+    condition     = var.network_config.ns_bgp_mode == null ? true : contains(["numbered", "unnumbered"], var.network_config.ns_bgp_mode)
+    error_message = "network_config.ns_bgp_mode must be \"numbered\" or \"unnumbered\"."
+  }
+
+  validation {
+    condition     = var.network_config.ns_bgp_mode != "unnumbered" || var.network_config.enable_north_south_networking
+    error_message = "network_config.ns_bgp_mode = \"unnumbered\" requires enable_north_south_networking = true."
+  }
 }
 
 variable "deploy" {

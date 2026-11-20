@@ -26,6 +26,11 @@ const (
 	tenantControlOnes     = "ones"
 	tenantControlExternal = "external"
 
+	// N-S BGP peering mode (addFabricData nsBgpMode). Unnumbered makes ONES set
+	// BGP_U: true in the generated fabric YAML.
+	nsBgpModeNumbered   = "numbered"
+	nsBgpModeUnnumbered = "unnumbered"
+
 	// spxGpuSubnet is the GPU subnet the UI fixes (and disables) for SpX RA 2.1.
 	spxGpuSubnet = "172"
 )
@@ -60,6 +65,7 @@ type fabricInput struct {
 
 	EnableNS              bool
 	NsOperatingSystem     string
+	NsBgpMode             string // "numbered" (default) or "unnumbered"
 	DedicatedStorage      bool
 	StartingSubnetCpu     string
 	StartingSubnetStorage string
@@ -273,6 +279,18 @@ func (in *fabricInput) validate() []fabricIssue {
 		} else if msg := validatePrivateOctet(in.StartingSubnetTenants); msg != "" {
 			add(msg, "network_config.starting_subnet_tenants is %q.", in.StartingSubnetTenants)
 		}
+	}
+	// --- N-S BGP mode ---
+	switch in.NsBgpMode {
+	case "", nsBgpModeNumbered:
+	case nsBgpModeUnnumbered:
+		if !in.EnableNS {
+			add("BGP unnumbered requires N-S networking",
+				"network_config.ns_bgp_mode is \"unnumbered\" but enable_north_south_networking is false. Enable N-S networking or remove ns_bgp_mode.")
+		}
+	default:
+		add("Unsupported N-S BGP mode",
+			"network_config.ns_bgp_mode is %q; supported values are \"numbered\" (default) and \"unnumbered\".", in.NsBgpMode)
 	}
 	if in.DpuHbn && in.IsVxlanFabricSet && !in.IsVxlanFabric {
 		add("VXLAN is required with DPU HBN",

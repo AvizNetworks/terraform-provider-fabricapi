@@ -143,6 +143,14 @@ type FabricDataRequest struct {
 	IsVxlanFabric      bool `json:"isVxlanFabric"`
 	StorageTenantAware bool `json:"storageTenantAware"`
 
+	// NsBgpMode is "unnumbered" to have ONES set BGP_U: true in the generated
+	// fabric YAML (ONES-APPS GFX-6392). It is left empty, and so omitted, for
+	// the default "numbered" mode, so requests that don't use unnumbered stay
+	// byte-for-byte what they were and still work on ONES builds without
+	// nsBgpMode support. ONES uses it only for YAML generation and does not
+	// forward it to FM. BGP_U is fabric-wide in ONES, so it affects E-W too.
+	NsBgpMode string `json:"nsBgpMode,omitempty"`
+
 	// Fields the ONES UI sends that the backend stores on the fabric record and
 	// reads back later (FabricNetwork.jsx handleSubmit / edit mode). All are
 	// derived by the provider, not set directly:

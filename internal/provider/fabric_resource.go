@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
@@ -18,7 +19,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-var _ resource.Resource = &FabricResource{}
+var (
+	_ resource.Resource                   = &FabricResource{}
+	_ resource.ResourceWithValidateConfig = &FabricResource{}
+)
 
 func NewFabricResource() resource.Resource {
 	return &FabricResource{}
@@ -68,6 +72,7 @@ type FabricNetworkConfigModel struct {
 	StartingSubnetTenants      types.String `tfsdk:"starting_subnet_tenants"`
 	EnableNorthSouthNetworking types.Bool   `tfsdk:"enable_north_south_networking"`
 	NsOperatingSystem          types.String `tfsdk:"ns_operating_system"`
+	NsBgpMode                  types.String `tfsdk:"ns_bgp_mode"`
 	DedicatedStorage           types.Bool   `tfsdk:"dedicated_storage"`
 	StartingSubnetCpu          types.String `tfsdk:"starting_subnet_cpu"`
 	StartingSubnetStorage      types.String `tfsdk:"starting_subnet_storage"`
@@ -270,6 +275,17 @@ func (r *FabricResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							stringplanmodifier.UseStateForUnknown(),
 						},
 					},
+					// Deliberately Optional only (not Computed with a default): fabrics
+					// created before this attribute existed have it null in state, and
+					// network_config RequiresReplace, so a computed "numbered" would
+					// plan a destroy/recreate of every existing fabric on upgrade.
+					"ns_bgp_mode": schema.StringAttribute{
+						MarkdownDescription: "North-south BGP peering mode: \"" + nsBgpModeNumbered + "\" (the existing behavior) or \"" + nsBgpModeUnnumbered + "\". Unset means \"" + nsBgpModeNumbered + "\". \"" + nsBgpModeUnnumbered + "\" makes ONES set `BGP_U: true` in the generated fabric YAML, and requires `enable_north_south_networking = true`. Needs an ONES build with `nsBgpMode` support in addFabricData (older builds ignore it and keep `BGP_U: false`). Note: `BGP_U` is a single fabric-wide setting in ONES, so it applies to the E-W BGP configuration too.",
+						Optional:            true,
+						Validators: []validator.String{
+							stringvalidator.OneOf(nsBgpModeNumbered, nsBgpModeUnnumbered),
+						},
+					},
 					"dedicated_storage": schema.BoolAttribute{
 						MarkdownDescription: "Use a separate subnet for storage NICs instead of sharing the user/storage subnet (the ONES UI's \"Dedicated Storage Network\" switch). Only meaningful when `enable_north_south_networking` is true. Requires `starting_subnet_storage`. Defaults to false if unset.",
 						Optional:            true,
@@ -335,6 +351,33 @@ func (r *FabricResource) Configure(ctx context.Context, req resource.ConfigureRe
 	r.client = client
 }
 
+// ValidateConfig rejects ns_bgp_mode = "unnumbered" without N-S networking at
+// plan time. Changing network_config replaces the fabric (delete, then
+// create), so a check that only ran in Create would delete the existing fabric
+// before failing. validate() in Create keeps the same check as a safeguard.
+// Values not yet known at plan time are skipped.
+func (r *FabricResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var networkConfig types.Object
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("network_config"), &networkConfig)...)
+	if resp.Diagnostics.HasError() || networkConfig.IsNull() || networkConfig.IsUnknown() {
+		return
+	}
+	attrs := networkConfig.Attributes()
+	mode, _ := attrs["ns_bgp_mode"].(types.String)
+	enableNS, _ := attrs["enable_north_south_networking"].(types.Bool)
+	if mode.IsNull() || mode.IsUnknown() || mode.ValueString() != nsBgpModeUnnumbered || enableNS.IsUnknown() {
+		return
+	}
+	// enable_north_south_networking defaults to false when unset.
+	if !enableNS.ValueBool() {
+		resp.Diagnostics.AddAttributeError(
+			path.Root("network_config").AtName("ns_bgp_mode"),
+			"BGP unnumbered requires N-S networking",
+			"network_config.ns_bgp_mode is \"unnumbered\" but enable_north_south_networking is false. Enable N-S networking or remove ns_bgp_mode.",
+		)
+	}
+}
+
 func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data FabricResourceModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -369,6 +412,10 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	nsOperatingSystem := "cumulus"
 	if !data.NetworkConfig.NsOperatingSystem.IsNull() && !data.NetworkConfig.NsOperatingSystem.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NsOperatingSystem.ValueString()) != "" {
 		nsOperatingSystem = data.NetworkConfig.NsOperatingSystem.ValueString()
+	}
+	nsBgpMode := nsBgpModeNumbered
+	if !data.NetworkConfig.NsBgpMode.IsNull() && !data.NetworkConfig.NsBgpMode.IsUnknown() && strings.TrimSpace(data.NetworkConfig.NsBgpMode.ValueString()) != "" {
+		nsBgpMode = data.NetworkConfig.NsBgpMode.ValueString()
 	}
 	dpuHbn := false
 	if !data.NetworkConfig.DpuHbn.IsNull() && !data.NetworkConfig.DpuHbn.IsUnknown() {
@@ -479,6 +526,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		EwTenantAware:         ewTenantAware,
 		EnableNS:              enableNS,
 		NsOperatingSystem:     nsOperatingSystem,
+		NsBgpMode:             nsBgpMode,
 		DedicatedStorage:      dedicatedStorage,
 		StartingSubnetCpu:     startingSubnetCpu,
 		StartingSubnetStorage: startingSubnetStorage,
@@ -515,6 +563,12 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 	}
 	// Tenant aware (E-W) is forced off when tenants are managed externally.
 	sendEwTenantAware := in.EwTenantAware && in.TenantControl != tenantControlExternal
+	// Only "unnumbered" is sent; "numbered" is ONES's default, so leaving the
+	// field out keeps existing requests unchanged.
+	sendNsBgpMode := ""
+	if in.NsBgpMode == nsBgpModeUnnumbered {
+		sendNsBgpMode = nsBgpModeUnnumbered
+	}
 
 	reqBody := FabricDataRequest{
 		Name:              data.Name.ValueString(),
@@ -551,6 +605,7 @@ func (r *FabricResource) Create(ctx context.Context, req resource.CreateRequest,
 		DpuHbn:             dpuHbn,
 		IsVxlanFabric:      in.IsVxlanFabric,
 		StorageTenantAware: in.StorageTenantAware,
+		NsBgpMode:          sendNsBgpMode,
 
 		GpuScaleMode:   gpuScaleMode,
 		NetworkType:    wireNetworkType(in.NetworkType),
